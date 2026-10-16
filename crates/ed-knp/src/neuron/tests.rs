@@ -115,7 +115,7 @@ fn poisson_input_rate_controls_firing() {
         n.syn_rate_hz = hz;
         spike_times(&mut n, 1000.0).0.len()
     };
-    let (none, low, high) = (rate(0.0), rate(1000.0), rate(10_000.0));
+    let (none, low, high) = (rate(0.0), rate(2000.0), rate(10_000.0));
     assert_eq!(none, 0);
     assert!(low < high && high >= 20, "{low} vs {high} spikes/s");
 }
@@ -140,20 +140,20 @@ fn synaptic_events_follow_rate_and_area() {
     // 1 s at 20 kHz: 20000 ± 141 events (at most one counted per compartment
     // and step, which loses ≈ 0.1 %).
     assert!((events as f64 - 20_000.0).abs() < 600.0, "{events}");
-    // Basal dendrites (below the soma) get their share of the area.
     let comps = &n.morphology().compartments;
     let dend = |c: &&Compartment| c.kind == Kind::Dendrite;
     let total: f64 = comps.iter().filter(dend).map(|c| c.area()).sum();
-    let (area, count) = comps
-        .iter()
-        .zip(&hits)
-        .filter(|(c, _)| dend(c) && c.centre()[2] < 0.0)
-        .fold((0.0, 0), |(a, k), (c, h)| (a + c.area(), k + h));
-    let expected = events as f64 * area / total;
-    assert!(
-        (count as f64 - expected).abs() < 5.0 * expected.sqrt(),
-        "{count} vs {expected}"
-    );
+    // Basal dendrites and the apical tuft each get their area share.
+    for region in [|z: f64| z < 0.0, |z: f64| z > 765.0] {
+        let (area, count) = comps
+            .iter()
+            .zip(&hits)
+            .filter(|(c, _)| dend(c) && region(c.centre()[2]))
+            .fold((0.0, 0), |(a, k), (c, h)| (a + c.area(), k + h));
+        let expected = events as f64 * area / total;
+        let err = (count as f64 - expected).abs();
+        assert!(err < 5.0 * expected.sqrt(), "{count} vs {expected}");
+    }
 }
 
 #[test]

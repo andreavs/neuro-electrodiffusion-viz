@@ -15,6 +15,12 @@
 //! exact for conductance-based currents), using the O(N) Hines elimination on
 //! the tree. Gates are then advanced with Rush-Larsen at the new potential.
 //!
+//! Inputs: a current injected into the soma ([`Neuron::i_stim`]) and
+//! excitatory Poisson input at [`Neuron::syn_rate_hz`], placed by dendritic
+//! area; each event adds `syn_weight_ns` to an exponential Na⁺ synapse
+//! (τ = `passive.syn_tau`). A clone shares the RNG state, so it receives the
+//! same input.
+//!
 //! Outputs, per compartment, in nA with **positive = positive charge leaving
 //! the cell** (the Publication 1 convention): [`Neuron::i_na`], [`Neuron::i_k`],
 //! [`Neuron::i_x`] and [`Neuron::i_cap`], plus [`Neuron::centres`] in µm. They
@@ -93,7 +99,7 @@ pub struct NeuronParams {
     pub passive: MembraneParams,
     /// Fixed intra- and extracellular concentrations.
     pub concentrations: IonConcentrations,
-    /// Peak conductance added by one synaptic event, nS.
+    /// Peak conductance added by one synaptic event, nS (≥ 0).
     pub syn_weight_ns: f64,
     /// RNG seed for the Poisson input.
     pub seed: u64,
@@ -122,10 +128,10 @@ pub struct Neuron {
     params: NeuronParams,
     /// Total rate of excitatory synaptic events over all dendrites, Hz,
     /// placed in proportion to membrane area (uniform density, as in
-    /// Publication 1). Can be changed at any time. With the default cell and
-    /// weight, about 2 kHz gives the paper's ~5 spikes/s; firing rises to
-    /// ~100 spikes/s near 20 kHz, and much higher rates drive the soma into
-    /// depolarisation block.
+    /// Publication 1). Must be finite and non-negative; can be changed at any
+    /// time. With the default cell and weight, about 2 kHz gives the paper's
+    /// ~5 spikes/s, 10–20 kHz gives ~90–110 spikes/s, and above ~30 kHz the
+    /// soma goes into depolarisation block.
     pub syn_rate_hz: f64,
     /// Current injected into the root (soma), nA (depolarising positive). Can
     /// be changed at any time.
@@ -316,7 +322,12 @@ impl Neuron {
     /// add its conductance to that compartment's exponential synapse.
     fn deliver_synapses(&mut self, t: f64) {
         let mean = self.syn_rate_hz * 1e-3 * self.params.dt;
-        if mean <= 0.0 || !matches!(self.syn_cdf.last(), Some(&x) if x > 0.0) {
+        debug_assert!(
+            mean.is_nan() || mean < 700.0,
+            "synaptic rate {} Hz too high",
+            self.syn_rate_hz
+        );
+        if mean.is_nan() || mean <= 0.0 || !matches!(self.syn_cdf.last(), Some(&x) if x > 0.0) {
             return;
         }
         // Knuth's method; the mean per step is small (≈ 0.5 at 20 kHz).
@@ -324,11 +335,9 @@ impl Neuron {
         let mut prod = self.uniform();
         while prod > limit {
             let u = self.uniform();
-            let i = self
-                .syn_cdf
-                .partition_point(|&c| c <= u)
-                .min(self.len() - 1);
+            let i = self.syn_cdf.partition_point(|&c| c <= u);
             let (act, j) = self.slot[i];
+            debug_assert!(!act, "synaptic event placed on a non-dendrite");
             // nS → mS/cm²: 1e-6 mS / (A · 1e-8 cm²) = 1e-3 / scale.
             let dg = self.params.syn_weight_ns * 1e-3 / self.scale[i];
             let pop = if act {
