@@ -17,8 +17,18 @@ export interface WorkerSolver {
    * Advance the simulation, spending at most about `budgetMs` of wall-clock time. Return
    * `false` when nothing changed (e.g. the run has finished): the loop then idles until the
    * next parameter change or action instead of re-posting the same frame.
+   *
+   * Return `'wait'` when the work runs elsewhere (e.g. in helper workers) and has not
+   * produced anything new yet: the loop then stops ticking until the solver calls the
+   * function passed to {@link WorkerSolver.setWake}.
    */
-  advance(budgetMs: number): void | boolean;
+  advance(budgetMs: number): void | boolean | 'wait';
+  /**
+   * Called once after construction with a function that asks the loop for another tick,
+   * for solvers whose `advance` can return `'wait'`. Calls after the solver is replaced
+   * or while paused are ignored.
+   */
+  setWake?(wake: () => void): void;
   /** Snapshot of the fields to render. Arrays must be fresh copies (they are transferred). */
   frame(): SolverFrame;
   /** Apply changed parameters (only the keys that changed are passed). */

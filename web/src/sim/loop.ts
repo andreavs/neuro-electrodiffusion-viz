@@ -133,7 +133,11 @@ export class RunLoop {
   private build(): void {
     this.solver?.dispose();
     this.solver = null;
-    this.solver = this.factories[this.scale!](this.params);
+    const solver = this.factories[this.scale!](this.params);
+    this.solver = solver;
+    solver.setWake?.(() => {
+      if (this.solver === solver && this.running) this.scheduleTick();
+    });
     this.solverMs = 0;
     this.resetRates();
     // Whatever frame was in flight belongs to the old solver and may never be
@@ -169,6 +173,8 @@ export class RunLoop {
       this.solverMs = this.solverMs === 0 ? spent : 0.9 * this.solverMs + 0.1 * spent;
       // Finished: idle until a parameter change or action (see `restarted`).
       if (changed === false) return;
+      // Work is running elsewhere: the solver wakes the loop when it has news.
+      if (changed === 'wait') return;
       this.dirty = true;
       if (this.awaitingAck) this.ticksAhead++;
       this.flush();
