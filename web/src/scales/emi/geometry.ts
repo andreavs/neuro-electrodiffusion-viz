@@ -1,57 +1,54 @@
-/** Pure helpers turning the EMI frame's quads into indexed triangle meshes. */
+/** Pure helpers turning the EMI frame's triangles into indexed triangle meshes. */
 
-export interface QuadMesh {
+export interface TriMesh {
   /** xyz per vertex, µm. */
   positions: Float32Array;
-  /** Two triangles per kept quad. */
+  /** One triangle per kept face. */
   index: Uint32Array;
-  /** Source of each vertex's value: a membrane node, or a slice corner (4 · quad + corner). */
+  /** Source of each vertex's value: a membrane node, or a slice corner (3 · triangle + corner). */
   source: Uint32Array;
 }
 
-/** Same-sided triangulation of a quad whose corners are 0..3 in order. */
-const TRI = [0, 1, 2, 0, 2, 3];
-
-function assemble(kept: number[], corner: (q: number, c: number) => [number, number, number, number]): QuadMesh {
-  const positions = new Float32Array(kept.length * 12);
-  const source = new Uint32Array(kept.length * 4);
-  const index = new Uint32Array(kept.length * 6);
+function assemble(kept: number[], corner: (q: number, c: number) => [number, number, number, number]): TriMesh {
+  const positions = new Float32Array(kept.length * 9);
+  const source = new Uint32Array(kept.length * 3);
+  const index = new Uint32Array(kept.length * 3);
   kept.forEach((q, k) => {
-    for (let c = 0; c < 4; c++) {
+    for (let c = 0; c < 3; c++) {
       const [x, y, z, src] = corner(q, c);
-      positions.set([x, y, z], 12 * k + 3 * c);
-      source[4 * k + c] = src;
+      positions.set([x, y, z], 9 * k + 3 * c);
+      source[3 * k + c] = src;
+      index[3 * k + c] = 3 * k + c;
     }
-    for (let t = 0; t < 6; t++) index[6 * k + t] = 4 * k + TRI[t]!;
   });
   return { positions, index, source };
 }
 
 /**
- * The axon surfaces, with every quad that reaches past `cut` along `axis` removed so the
- * slice behind it stays visible. Each quad gets its own four vertices (flat shading per face).
+ * The cell surfaces, with every triangle that reaches past `cut` along `axis` removed so the
+ * slice behind it stays visible. Each triangle gets its own three vertices (flat shading).
  */
-export function membraneMesh(nodes: Float32Array, quads: Float32Array, axis: number, cut: number): QuadMesh {
+export function membraneMesh(nodes: Float32Array, tris: Float32Array, axis: number, cut: number): TriMesh {
   const kept: number[] = [];
   const eps = 1e-6 * Math.max(1, Math.abs(cut));
-  for (let q = 0; q < quads.length / 4; q++) {
+  for (let q = 0; q < tris.length / 3; q++) {
     let max = -Infinity;
-    for (let c = 0; c < 4; c++) max = Math.max(max, nodes[3 * quads[4 * q + c]! + axis]!);
+    for (let c = 0; c < 3; c++) max = Math.max(max, nodes[3 * tris[3 * q + c]! + axis]!);
     if (max <= cut + eps) kept.push(q);
   }
   return assemble(kept, (q, c) => {
-    const n = quads[4 * q + c]!;
+    const n = tris[3 * q + c]!;
     return [nodes[3 * n]!, nodes[3 * n + 1]!, nodes[3 * n + 2]!, n];
   });
 }
 
-/** The slice quads, keeping intracellular ones (tag > 0) only when `inside` is set. */
-export function sliceMesh(corners: Float32Array, tags: Float32Array, inside: boolean): QuadMesh {
+/** The slice triangles, keeping intracellular ones (tag > 0) only when `inside` is set. */
+export function sliceMesh(corners: Float32Array, tags: Float32Array, inside: boolean): TriMesh {
   const kept: number[] = [];
   for (let q = 0; q < tags.length; q++) if (inside || tags[q] === 0) kept.push(q);
   return assemble(kept, (q, c) => {
-    const i = 12 * q + 3 * c;
-    return [corners[i]!, corners[i + 1]!, corners[i + 2]!, 4 * q + c];
+    const i = 9 * q + 3 * c;
+    return [corners[i]!, corners[i + 1]!, corners[i + 2]!, 3 * q + c];
   });
 }
 
@@ -73,10 +70,11 @@ export function stimulatedCells(mask: number, nCells: number): Set<number> {
   return out;
 }
 
-/** Normal axis of the slice: the one along which a quad's corners share their coordinate. */
+/** Normal axis of the slice: the one along which the corners spread least (not at all). */
 export function sliceAxisOf(corners: Float32Array): number {
-  for (let a = 0; a < 3; a++) {
-    if (corners[a] === corners[3 + a] && corners[a] === corners[6 + a] && corners[a] === corners[9 + a]) return a;
-  }
-  return 2;
+  const spread = [0, 1, 2].map((a) => {
+    const c = corners.filter((_, i) => i % 3 === a);
+    return c.reduce((m, v) => Math.max(m, v), -Infinity) - c.reduce((m, v) => Math.min(m, v), Infinity);
+  });
+  return corners.length < 9 ? 2 : spread.indexOf(Math.min(...spread));
 }

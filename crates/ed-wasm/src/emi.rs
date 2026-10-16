@@ -1,10 +1,12 @@
 //! Bindings for `ed-emi`: a KNP-EMI axon bundle (Publication 2).
 //!
 //! [`EmiSim`] owns the finite element solver and turns its per-DOF state into what the
-//! cell-scale view draws: membrane potential on the axon surfaces, one extracellular (or
-//! intracellular) field on a slice through the bundle, and φ_M traces at a probe position.
+//! cell-scale view draws: membrane potential on the cell surfaces, one extracellular (or
+//! intracellular) field on a plane cut, and φ_M traces at probes.
 
-use ed_emi::mesh::{Aabb, Grid, Mesh, MeshSpec, NONE};
+use ed_emi::mesh::{Aabb, Mesh, MeshSpec};
+
+use crate::emi_slice::PlaneCut;
 use ed_emi::solver::{EmiParams, EmiSolver};
 use wasm_bindgen::prelude::*;
 
@@ -58,169 +60,21 @@ pub fn selection(n: usize, which: &str) -> Result<Vec<u16>, String> {
     }
 }
 
-/// The grid of a mesh built from a [`MeshSpec`] (every mesh these bindings make).
-fn grid(mesh: &Mesh) -> &Grid {
-    mesh.grid
-        .as_ref()
-        .expect("bundle meshes are built on a grid")
-}
-
-/// A plane through the middle of one layer of hexes: one quad per hex of the layer.
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub struct Slice {
-    /// Normal axis (0 = x, 1 = y, 2 = z).
-    pub axis: usize,
-    /// Hex layer along `axis`.
-    pub layer: usize,
-}
-
-impl Slice {
-    /// The layer containing the fraction `frac` ∈ [0, 1] of the domain along `axis`.
-    pub fn at(mesh: &Mesh, axis: usize, frac: f64) -> Self {
-        let axes = &grid(mesh).axes;
-        let n = axes[axis].len() - 1;
-        let x = axes[axis][0] + frac.clamp(0.0, 1.0) * (axes[axis][n] - axes[axis][0]);
-        let layer = axes[axis].partition_point(|&p| p <= x).clamp(1, n) - 1;
-        Self { axis, layer }
-    }
-
-    /// The two in-plane axes, in increasing order.
-    fn plane_axes(self) -> (usize, usize) {
-        match self.axis {
-            0 => (1, 2),
-            1 => (0, 2),
-            _ => (0, 1),
-        }
-    }
-
-    /// Calls `f(hex, corners)` for each quad, `u` fastest, with each corner as the grid
-    /// vertices on the two faces of the layer; corners go (u,v), (u+1,v), (u+1,v+1), (u,v+1).
-    fn for_each_quad(self, mesh: &Mesh, mut f: impl FnMut(usize, [[usize; 2]; 4])) {
-        let dims = grid(mesh).vertex_dims();
-        let (ua, va) = self.plane_axes();
-        let vert = |idx: [usize; 3]| idx[0] + dims[0] * (idx[1] + dims[1] * idx[2]);
-        let hex = |idx: [usize; 3]| idx[0] + (dims[0] - 1) * (idx[1] + (dims[1] - 1) * idx[2]);
-        for iv in 0..dims[va] - 1 {
-            for iu in 0..dims[ua] - 1 {
-                let mut base = [0; 3];
-                base[ua] = iu;
-                base[va] = iv;
-                base[self.axis] = self.layer;
-                let corner = |du: usize, dv: usize| {
-                    let mut p = base;
-                    p[ua] += du;
-                    p[va] += dv;
-                    let mut q = p;
-                    q[self.axis] += 1;
-                    [vert(p), vert(q)]
-                };
-                f(
-                    hex(base),
-                    [corner(0, 0), corner(1, 0), corner(1, 1), corner(0, 1)],
-                );
-            }
-        }
-    }
-
-    /// Quad corner positions (xyz per corner, 4 corners per quad), µm.
-    pub fn positions(self, mesh: &Mesh) -> Vec<f32> {
-        let mut out = Vec::new();
-        self.for_each_quad(mesh, |_, corners| {
-            for [a, b] in corners {
-                let (pa, pb) = (mesh.vertex_position(a), mesh.vertex_position(b));
-                out.extend((0..3).map(|k| (0.5 * (pa[k] + pb[k])) as f32));
-            }
-        });
-        out
-    }
-
-    /// Subdomain tag of each quad (0 = extracellular).
-    pub fn tags(self, mesh: &Mesh) -> Vec<f32> {
-        let mut out = Vec::new();
-        self.for_each_quad(mesh, |h, _| out.push(f32::from(grid(mesh).hex_tag[h])));
-        out
-    }
-
-    /// `field` per DOF, sampled at the quad corners from the quad's own subdomain.
-    pub fn values(self, mesh: &Mesh, field: &[f64]) -> Vec<f32> {
-        let mut out = Vec::new();
-        self.for_each_quad(mesh, |h, corners| {
-            let map = if grid(mesh).hex_tag[h] == 0 {
-                &mesh.vertex_outer
-            } else {
-                &mesh.vertex_inner
-            };
-            for [a, b] in corners {
-                let (da, db) = (map[a], map[b]);
-                debug_assert!(da != NONE && db != NONE);
-                out.push((0.5 * (field[da as usize] + field[db as usize])) as f32);
-            }
-        });
-        out
-    }
-}
-
-/// Membrane quads (4 membrane node indices each): every hex face between a cell and the
-/// extracellular space.
-pub fn membrane_quads(mesh: &Mesh) -> Vec<u32> {
-    let dims = grid(mesh).vertex_dims();
-    let mut node_of_vertex = vec![NONE; mesh.vertex_outer.len()];
-    for (p, m) in mesh.membrane.iter().enumerate() {
-        node_of_vertex[mesh.dof_vertex[m.inner as usize] as usize] = p as u32;
-    }
-    let h = [dims[0] - 1, dims[1] - 1, dims[2] - 1];
-    let hex = |i: [usize; 3]| i[0] + h[0] * (i[1] + h[1] * i[2]);
-    let vert = |i: [usize; 3]| i[0] + dims[0] * (i[1] + dims[1] * i[2]);
-    let mut quads = Vec::new();
-    for (hx, &tag) in grid(mesh).hex_tag.iter().enumerate() {
-        if tag == 0 {
-            continue;
-        }
-        let idx = [hx % h[0], hx / h[0] % h[1], hx / (h[0] * h[1])];
-        for (a, side) in (0..3).flat_map(|a| [(a, 0), (a, 1)]) {
-            // Neighbour across the face; a cell face on the box boundary has no
-            // extracellular side and so no membrane.
-            let mut nb = idx;
-            match (idx[a] + 2 * side).checked_sub(1) {
-                Some(i) if i < h[a] => nb[a] = i,
-                _ => continue,
-            }
-            if grid(mesh).hex_tag[hex(nb)] != 0 {
-                continue;
-            }
-            let (b, c) = ((a + 1) % 3, (a + 2) % 3);
-            // Counter-clockwise seen from outside the cell.
-            let ccw = [(0, 0), (1, 0), (1, 1), (0, 1)];
-            let order = if side == 1 {
-                ccw
-            } else {
-                ccw.map(|(b, c)| (c, b))
-            };
-            let face = order.map(|(db, dc)| {
-                let mut v = idx;
-                v[a] += side;
-                v[b] += db;
-                v[c] += dc;
-                node_of_vertex[vert(v)]
-            });
-            if face.iter().all(|&n| n != NONE) {
-                quads.extend(face);
-            }
-        }
-    }
-    quads
-}
-
 #[wasm_bindgen]
 pub struct EmiSim {
     solver: EmiSolver,
+    /// Axons per side of the bundle.
     per_side: usize,
-    /// Membrane nodes of each cell on the probe plane.
+    /// Membrane nodes of each probe: one per axon on the probe plane for the bundle.
     probe_nodes: Vec<Vec<usize>>,
     probe_x: f64,
-    /// Interleaved `[t, φ_M of cell 1 … n]` per step since the last `take_traces`.
+    /// Interleaved `[t, φ_M of probe 1 … n]` per step since the last `take_traces`.
     traces: Vec<f32>,
     stimulated: u32,
+    /// The last plane cut, by (axis, frac).
+    cut: Option<(usize, f64, PlaneCut)>,
+    /// Mesh bounds (lo, hi), µm.
+    bounds: ([f64; 3], [f64; 3]),
 }
 
 #[wasm_bindgen]
@@ -243,14 +97,15 @@ impl EmiSim {
         Ok(())
     }
 
-    /// Moves the probe to the grid plane nearest `x` µm from the start of the axons.
+    /// Moves the bundle's probes to the grid plane nearest `x` µm from the start of the
+    /// axons (one per axon).
     pub fn set_probe(&mut self, x: f64) {
         if !x.is_finite() {
             return;
         }
         let mesh = self.solver.mesh();
         let target = END_GAP + x.clamp(0.0, LENGTH);
-        let xs = &grid(mesh).axes[0];
+        let xs = &mesh.grid.as_ref().expect("bundles have a grid").axes[0];
         let x = xs
             .iter()
             .copied()
@@ -299,12 +154,10 @@ impl EmiSim {
         self.stimulated
     }
 
-    /// Domain size `[x, y, z]`, µm.
-    pub fn extent(&self) -> Vec<f32> {
-        let a = &grid(self.solver.mesh()).axes;
-        a.iter()
-            .map(|ax| *ax.last().unwrap_or(&0.0) as f32)
-            .collect()
+    /// Domain bounds `[x_lo, y_lo, z_lo, x_hi, y_hi, z_hi]`, µm.
+    pub fn bounds(&self) -> Vec<f32> {
+        let (lo, hi) = &self.bounds;
+        lo.iter().chain(hi).map(|&v| v as f32).collect()
     }
 
     /// Membrane node positions, interleaved xyz in µm.
@@ -317,9 +170,9 @@ impl EmiSim {
             .collect()
     }
 
-    /// See [`membrane_quads`].
-    pub fn membrane_quads(&self) -> Vec<u32> {
-        membrane_quads(self.solver.mesh())
+    /// Membrane triangles as membrane node indices, counter-clockwise from outside.
+    pub fn membrane_triangles(&self) -> Vec<u32> {
+        self.solver.mesh().membrane_facets.concat()
     }
 
     /// Membrane potential per membrane node, mV.
@@ -327,23 +180,23 @@ impl EmiSim {
         self.solver.phi_m().iter().map(|&v| v as f32).collect()
     }
 
-    /// Quad corners of the slice normal to `axis` through fraction `frac` of the domain.
-    pub fn slice_positions(&self, axis: usize, frac: f64) -> Vec<f32> {
-        self.slice(axis, frac).positions(self.solver.mesh())
+    /// Triangle corners (xyz each) of the plane cut normal to `axis` through fraction
+    /// `frac` of the domain.
+    pub fn slice_positions(&mut self, axis: usize, frac: f64) -> Vec<f32> {
+        self.slice(axis, frac).positions.clone()
     }
-    pub fn slice_tags(&self, axis: usize, frac: f64) -> Vec<f32> {
-        self.slice(axis, frac).tags(self.solver.mesh())
+    /// Subdomain tag of each slice triangle (0 = extracellular).
+    pub fn slice_tags(&mut self, axis: usize, frac: f64) -> Vec<f32> {
+        self.slice(axis, frac).tags.clone()
     }
-    /// `field` ("phi" mV, or "na", "k", "cl" mM) at the slice quad corners.
-    pub fn slice_values(&self, axis: usize, frac: f64, field: &str) -> Result<Vec<f32>, JsError> {
-        let data = match field {
-            "phi" => self.solver.phi(),
-            "na" => self.solver.conc(0),
-            "k" => self.solver.conc(1),
-            "cl" => self.solver.conc(2),
-            _ => return Err(js(format!("unknown field {field:?}"))),
-        };
-        Ok(self.slice(axis, frac).values(self.solver.mesh(), data))
+    /// `field` ("phi" mV, or "na", "k", "cl" mM) at the slice triangle corners.
+    pub fn slice_values(
+        &mut self,
+        axis: usize,
+        frac: f64,
+        field: &str,
+    ) -> Result<Vec<f32>, JsError> {
+        self.slice_field(axis, frac, field).map_err(js)
     }
 
     /// Drains the trace samples recorded since the last call: `[t, φ_M(1) … φ_M(n)]` each.
@@ -368,15 +221,30 @@ impl EmiSim {
             ..EmiParams::default()
         };
         let mut sim = Self {
+            bounds: mesh.bounds(),
             solver: EmiSolver::new(mesh, params),
             per_side: n,
             probe_nodes: Vec::new(),
             probe_x: 0.0,
             traces: Vec::new(),
             stimulated: 0,
+            cut: None,
         };
         sim.set_probe(0.75 * LENGTH);
         Ok(sim)
+    }
+
+    fn slice_field(&mut self, axis: usize, frac: f64, field: &str) -> Result<Vec<f32>, String> {
+        let k = match field {
+            "phi" => None,
+            "na" => Some(0),
+            "k" => Some(1),
+            "cl" => Some(2),
+            _ => return Err(format!("unknown field {field:?}")),
+        };
+        self.slice(axis, frac);
+        let data = k.map_or(self.solver.phi(), |k| self.solver.conc(k));
+        Ok(self.cut.as_ref().expect("just cut").2.values(data))
     }
 
     fn stimulate_cells(&mut self, which: &str) -> Result<(), String> {
@@ -389,8 +257,28 @@ impl EmiSim {
         Ok(())
     }
 
-    fn slice(&self, axis: usize, frac: f64) -> Slice {
-        Slice::at(self.solver.mesh(), axis.min(2), frac)
+    /// The plane cut normal to `axis` at fraction `frac` of the domain, cached.
+    fn slice(&mut self, axis: usize, frac: f64) -> &PlaneCut {
+        let axis = axis.min(2);
+        let frac = if frac.is_finite() {
+            frac.clamp(0.0, 1.0)
+        } else {
+            0.5
+        };
+        if !matches!(&self.cut, Some((a, f, _)) if *a == axis && *f == frac) {
+            let (lo, hi) = self.bounds;
+            // Keep the plane just inside the box so the end faces still cut tets.
+            let mut at = lo[axis] + (hi[axis] - lo[axis]) * frac.clamp(1e-6, 1.0 - 1e-6);
+            let mesh = self.solver.mesh();
+            if let Some(grid) = &mesh.grid {
+                // Midway through a grid layer, never on a membrane face.
+                let xs = &grid.axes[axis];
+                let i = xs.partition_point(|&p| p <= at).clamp(1, xs.len() - 1);
+                at = 0.5 * (xs[i - 1] + xs[i]);
+            }
+            self.cut = Some((axis, frac, PlaneCut::new(mesh, axis, at)));
+        }
+        &self.cut.as_ref().expect("just cut").2
     }
 
     /// Appends one trace sample for the current time.
@@ -403,7 +291,7 @@ impl EmiSim {
         let phi_m = self.solver.phi_m();
         for nodes in &self.probe_nodes {
             let sum: f64 = nodes.iter().map(|&p| phi_m[p]).sum();
-            self.traces.push((sum / nodes.len().max(1) as f64) as f32);
+            self.traces.push((sum / nodes.len() as f64) as f32);
         }
     }
 }
@@ -425,49 +313,53 @@ mod tests {
     use super::*;
 
     #[test]
-    fn membrane_quads_cover_every_axon_surface() {
-        let mesh = Mesh::build(&bundle_spec(3, 0.1)).unwrap();
-        let quads = membrane_quads(&mesh);
-        let area = |q: [u32; 4]| {
-            let p = q.map(|n| {
-                mesh.vertex_position(
-                    mesh.dof_vertex[mesh.membrane[n as usize].inner as usize] as usize,
-                )
-            });
-            let d = |a: [f64; 3], b: [f64; 3]| {
-                ((0..3).map(|k| (a[k] - b[k]).powi(2)).sum::<f64>()).sqrt()
-            };
-            d(p[0], p[1]) * d(p[1], p[2])
-        };
-        let total: f64 = quads.chunks(4).map(|q| area(q.try_into().unwrap())).sum();
+    fn membrane_triangles_cover_every_axon_surface() {
+        let s = EmiSim::build(3, 0.1, 0.1).unwrap();
+        let p = s.membrane_positions();
+        let tris = s.membrane_triangles();
+        let total: f64 = tris
+            .chunks(3)
+            .map(|t| {
+                let q = |i: usize| [0, 1, 2].map(|k| f64::from(p[3 * t[i] as usize + k]));
+                let (a, b, c) = (q(0), q(1), q(2));
+                let u = [0, 1, 2].map(|k| b[k] - a[k]);
+                let w = [0, 1, 2].map(|k| c[k] - a[k]);
+                let x = [
+                    u[1] * w[2] - u[2] * w[1],
+                    u[2] * w[0] - u[0] * w[2],
+                    u[0] * w[1] - u[1] * w[0],
+                ];
+                0.5 * (x[0] * x[0] + x[1] * x[1] + x[2] * x[2]).sqrt()
+            })
+            .sum();
         let one = Aabb::new([0.0; 3], [LENGTH, SIDE, SIDE]).surface_area();
-        assert!((total / (9.0 * one) - 1.0).abs() < 1e-6, "{total} vs {one}");
+        assert!((total / (9.0 * one) - 1.0).abs() < 1e-5, "{total} vs {one}");
     }
 
     #[test]
-    fn slices_have_matching_sizes_and_sample_the_right_side() {
-        let s = EmiSim::build(3, 0.1, 0.1).unwrap();
-        let mesh = s.solver.mesh();
+    fn slices_sample_the_right_side() {
+        let mut s = EmiSim::build(3, 0.1, 0.1).unwrap();
         for (axis, frac) in [(0, 0.5), (2, 0.5), (1, 0.0), (2, 1.0)] {
-            let sl = Slice::at(mesh, axis, frac);
-            let tags = sl.tags(mesh);
-            assert_eq!(sl.positions(mesh).len(), 12 * tags.len());
-            let phi = sl.values(mesh, s.solver.phi());
-            assert_eq!(phi.len(), 4 * tags.len());
+            let tags = s.slice_tags(axis, frac);
+            assert_eq!(s.slice_positions(axis, frac).len(), 9 * tags.len());
+            let phi = s.slice_field(axis, frac, "phi").unwrap();
+            assert_eq!(phi.len(), 3 * tags.len());
             // At rest φ_e = 0 outside and φ_i = rest potential inside.
-            for (q, &t) in tags.iter().enumerate() {
-                let v = phi[4 * q];
-                assert!(
-                    if t == 0.0 { v.abs() < 1e-6 } else { v < -50.0 },
-                    "tag {t}: {v}"
-                );
+            for (t, &tag) in tags.iter().enumerate() {
+                let v = phi[3 * t];
+                let ok = if tag == 0.0 {
+                    v.abs() < 1e-6
+                } else {
+                    v < -50.0
+                };
+                assert!(ok, "tag {tag}: {v}");
             }
         }
         // A cross-section through the middle shows all nine axons.
-        let tags = Slice::at(mesh, 0, 0.5).tags(mesh);
+        let tags = s.slice_tags(0, 0.5);
         assert!((1..=9).all(|c| tags.contains(&(c as f32))));
-        // The middle of z cuts through the middle row of axons.
-        assert!(Slice::at(mesh, 2, 0.5).tags(mesh).contains(&5.0));
+        assert!(s.slice_tags(2, 0.5).contains(&5.0));
+        assert!(s.slice_field(2, 0.5, "q").is_err());
     }
 
     #[test]

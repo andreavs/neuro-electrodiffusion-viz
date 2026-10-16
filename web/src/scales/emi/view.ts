@@ -22,7 +22,7 @@ import { createAboutPanel } from '../../ui/about';
 import { ControlPanel } from '../../ui/controls';
 import { startRenderLoop } from '../../ui/renderLoop';
 import { getScale, type ScaleView } from '../registry';
-import { gather, membraneMesh, sliceAxisOf, sliceMesh, slicePlane, stimulatedCells, type QuadMesh } from './geometry';
+import { gather, membraneMesh, sliceAxisOf, sliceMesh, slicePlane, stimulatedCells, type TriMesh } from './geometry';
 import { AXON_START, EMI_PARAMS, SLICE_FIELDS } from './params';
 import './view.css';
 
@@ -43,11 +43,11 @@ const FIELDS: Record<string, { label: string; units: string; colormap: Colormap 
 /** A colormapped quad mesh plus the scratch array its per-vertex values are gathered into. */
 interface Layer {
   field: SurfaceField;
-  mesh: QuadMesh;
+  mesh: TriMesh;
   values: Float32Array;
 }
 
-function makeLayer(mesh: QuadMesh, colormap: Colormap): Layer {
+function makeLayer(mesh: TriMesh, colormap: Colormap): Layer {
   const g = new THREE.BufferGeometry();
   g.setAttribute('position', new THREE.BufferAttribute(mesh.positions, 3));
   g.setIndex(new THREE.BufferAttribute(mesh.index, 1));
@@ -131,7 +131,7 @@ export function createEmiView(): ScaleView {
       let sliceId = -1;
       let inside = false;
       let nodes: Float32Array = new Float32Array();
-      let quads: Float32Array = new Float32Array();
+      let tris: Float32Array = new Float32Array();
       let corners: Float32Array = new Float32Array();
       let tags: Float32Array = new Float32Array();
       let extent = new THREE.Vector3(1, 1, 1);
@@ -141,7 +141,7 @@ export function createEmiView(): ScaleView {
       let route: [number, number][] = [];
       let lastTraceT = -Infinity;
 
-      const replace = (old: Layer | null, mesh: QuadMesh, colormap: Colormap): Layer => {
+      const replace = (old: Layer | null, mesh: TriMesh, colormap: Colormap): Layer => {
         old?.field.dispose();
         const layer = makeLayer(mesh, colormap);
         bundle.add(layer.field.mesh);
@@ -150,7 +150,7 @@ export function createEmiView(): ScaleView {
 
       const rebuildMeshes = () => {
         const axis = sliceAxisOf(corners);
-        membrane = replace(membrane, membraneMesh(nodes, quads, axis, slicePlane(corners, axis)), membraneMap());
+        membrane = replace(membrane, membraneMesh(nodes, tris, axis, slicePlane(corners, axis)), membraneMap());
         setRange(membrane.field, membraneBar.range);
         membrane.field.setGlow(glow());
         slice = replace(slice, sliceMesh(corners, tags, inside), sliceMap(sliceField));
@@ -211,11 +211,11 @@ export function createEmiView(): ScaleView {
         const params = panel.params();
         let meshesStale = false;
 
-        if (s.geometry !== geometryId && f.nodes && f.quads) {
+        if (s.geometry !== geometryId && f.nodes && f.tris) {
           geometryId = s.geometry!;
           nodes = f.nodes;
-          quads = f.quads;
-          extent = new THREE.Vector3(s.extentX, s.extentY, s.extentZ);
+          tris = f.tris;
+          extent = new THREE.Vector3(s.hiX! - s.loX!, s.hiY! - s.loY!, s.hiZ! - s.loZ!);
           placeBundle();
           probeX = NaN;
           traceKey = '';
@@ -242,7 +242,7 @@ export function createEmiView(): ScaleView {
           bars.append(sliceBar.el);
           meshesStale = true;
         }
-        if (geometryId < 0 || sliceId < 0 || corners.length < 12) return;
+        if (geometryId < 0 || sliceId < 0 || corners.length < 9) return;
         if (meshesStale) {
           rebuildMeshes();
           sliceBar!.resetAuto();
