@@ -5,8 +5,5 @@
 //! the model and the time-stepping scheme.
 
 pub mod fem;
-pub mod geometry;
 pub mod mesh;
 pub mod solver;
-
-pub use geometry::{AxonBundle, Geometry, MembraneFace};
