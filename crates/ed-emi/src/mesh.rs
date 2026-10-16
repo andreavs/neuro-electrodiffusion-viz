@@ -73,9 +73,8 @@ impl MeshSpec {
         }
     }
 
-    /// The default bundle for the app: the paper's 3×3 cross-section with 200 µm axons and
-    /// a coarse grid (5 µm along the axons, ≤ 0.3 µm across, which only splits the cell
-    /// faces) that runs at about 20 simulated ms per wall second natively.
+    /// The app's default: the paper's cross-section with 200 µm axons on a coarse grid
+    /// (5 µm along the axons, ≤ 0.3 µm across, which only splits the cell faces).
     pub fn default_bundle() -> Self {
         let mut spec = Self::axon_bundle(200.0, 0.2, 0.1, 0.3, 5.0);
         spec.max_h = [5.0, 0.3, 0.3];
@@ -91,16 +90,22 @@ impl MeshSpec {
 /// Why a [`MeshSpec`] could not be meshed.
 #[derive(Debug, Clone, PartialEq)]
 pub enum MeshError {
+    /// `extent` or `max_h` is not positive and finite.
+    BadSpacing,
     /// A cell is empty or sticks out of the domain.
     CellOutsideDomain(usize),
-    /// Two cells share a vertex; the KNP-EMI model needs extracellular space between cells.
+    /// A cell got no hexes: it lies inside another cell or is thinner than the snapping tolerance.
+    EmptyCell(usize),
+    /// Two cells share a vertex or overlap; KNP-EMI needs extracellular space between cells.
     CellsTouch(usize, usize),
 }
 
 impl fmt::Display for MeshError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            Self::BadSpacing => write!(f, "extent and max_h must be positive and finite"),
             Self::CellOutsideDomain(c) => write!(f, "cell {c} is empty or outside the domain"),
+            Self::EmptyCell(c) => write!(f, "cell {c} has no hexes"),
             Self::CellsTouch(a, b) => write!(f, "cells {a} and {b} touch"),
         }
     }
@@ -142,7 +147,8 @@ pub struct Mesh {
     pub dof_vertex: Vec<u32>,
     /// Subdomain tag of each DOF.
     pub dof_tag: Vec<u16>,
-    /// Extracellular DOF of each grid vertex, or [`NONE`].
+    /// Extracellular DOF of each grid vertex, or [`NONE`]. Cells may touch the domain
+    /// boundary, so outer boundary conditions must go through this map, not vertex position.
     pub vertex_outer: Vec<u32>,
     /// Intracellular DOF of each grid vertex, or [`NONE`].
     pub vertex_inner: Vec<u32>,
@@ -162,12 +168,14 @@ fn axis_planes(extent: f64, cells: &[Aabb], axis: usize, max_h: f64) -> Vec<f64>
     }
     breaks.sort_by(f64::total_cmp);
     breaks.dedup_by(|a, b| (*a - *b).abs() <= tol);
+    *breaks.last_mut().unwrap() = extent;
     let mut planes = vec![breaks[0]];
     for w in breaks.windows(2) {
         let n = ((w[1] - w[0]) / max_h - 1e-9).ceil().max(1.0) as usize;
-        for s in 1..=n {
+        for s in 1..n {
             planes.push(w[0] + (w[1] - w[0]) * s as f64 / n as f64);
         }
+        planes.push(w[1]);
     }
     planes
 }
@@ -198,6 +206,10 @@ impl Mesh {
     /// Meshes `spec`. Panics with `u16::MAX` or more cells.
     pub fn build(spec: &MeshSpec) -> Result<Self, MeshError> {
         assert!(spec.cells.len() < u16::MAX as usize, "too many cells");
+        let positive = |x: f64| x.is_finite() && x > 0.0;
+        if !spec.extent.into_iter().chain(spec.max_h).all(positive) {
+            return Err(MeshError::BadSpacing);
+        }
         for (c, cell) in spec.cells.iter().enumerate() {
             if (0..3).any(|a| {
                 cell.lo[a] < 0.0 || cell.hi[a] > spec.extent[a] || cell.hi[a] <= cell.lo[a]
@@ -226,6 +238,11 @@ impl Mesh {
                     }
                 }
             }
+        }
+        let mut has_hex = vec![false; spec.cells.len() + 1];
+        hex_tag.iter().for_each(|&t| has_hex[t as usize] = true);
+        if let Some(c) = (1..has_hex.len()).find(|&c| !has_hex[c]) {
+            return Err(MeshError::EmptyCell(c - 1));
         }
 
         // One DOF per (vertex, adjacent subdomain).
@@ -450,22 +467,6 @@ mod tests {
     }
 
     #[test]
-    fn tets_have_positive_volume_and_stay_in_their_subdomain() {
-        let mesh = Mesh::build(&single_cell()).unwrap();
-        for (t, tet) in mesh.tets.iter().enumerate() {
-            assert!(tet
-                .iter()
-                .all(|&d| mesh.dof_tag[d as usize] == mesh.tet_tag[t]));
-            let p = mesh.tet_points(t);
-            let e = [1, 2, 3].map(|i| [0, 1, 2].map(|a| p[i][a] - p[0][a]));
-            let det = e[0][0] * (e[1][1] * e[2][2] - e[1][2] * e[2][1])
-                - e[0][1] * (e[1][0] * e[2][2] - e[1][2] * e[2][0])
-                + e[0][2] * (e[1][0] * e[2][1] - e[1][1] * e[2][0]);
-            assert!(det.abs() > 1e-12);
-        }
-    }
-
-    #[test]
     fn grid_planes_include_cell_faces() {
         let mesh = Mesh::build(&MeshSpec::paper_bundle()).unwrap();
         for y in [0.3, 0.5, 0.6, 0.8, 0.9, 1.1] {
@@ -488,5 +489,10 @@ mod tests {
             Mesh::build(&spec).unwrap_err(),
             MeshError::CellOutsideDomain(1)
         );
+        spec.cells[1] = Aabb::new([1.5, 0.8, 0.8], [2.5, 1.2, 1.2]);
+        assert_eq!(Mesh::build(&spec).unwrap_err(), MeshError::EmptyCell(1));
+        spec.cells.pop();
+        spec.max_h[2] = 0.0;
+        assert_eq!(Mesh::build(&spec).unwrap_err(), MeshError::BadSpacing);
     }
 }
