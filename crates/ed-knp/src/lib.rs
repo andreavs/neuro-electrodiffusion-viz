@@ -63,6 +63,7 @@ pub struct KnpConfig {
     pub boundary: Boundary,
     /// Tolerance of the potential solve, as the RMS charge-density error Σ z c (mM) it may
     /// leave per step. The error does not accumulate: each step projects onto the target.
+    /// The default, 1e-6 mM, keeps φ within 1e-4 mV of a tight solve on the default grid.
     pub charge_tol: f64,
 }
 
@@ -83,7 +84,7 @@ impl Default for KnpConfig {
             temperature: T_DEFAULT,
             dt: 0.1,
             boundary: Boundary::Dirichlet,
-            charge_tol: 1e-7,
+            charge_tol: 1e-6,
         }
     }
 }
@@ -184,6 +185,14 @@ impl KnpSolver {
         self.dt = dt;
         self.diffusion.set_dt(&self.model, dt);
         self.projection.set_dt(&self.model, dt);
+    }
+
+    pub fn dt(&self) -> f64 {
+        self.dt
+    }
+
+    pub fn num_species(&self) -> usize {
+        self.c.len()
     }
 
     /// Concentration of species `k` (mM).

@@ -51,8 +51,9 @@ Constants: R = 8.314 J/(K mol), F = 9.648·10⁴ C/mol, T = 300 K.
 ## Scale 1: KNP with point-source neurons (Publication 1)
 
 - Electroneutral KNP: instead of Poisson's equation, require ∂ρ/∂t = −i_cap everywhere, i.e.
-  F Σ_k z_k ∇·J_k = F Σ_k z_k f_k − i_cap. This gives a linear elliptic equation for φ each step:
-  ∇·(σ∇φ) = −F Σ_k z_k ∇·(D_k ∇c_k) + (source terms), with σ = (F/ψ) Σ_k D_k z_k² c_k.
+  F Σ_k z_k ∇·J_k = F Σ_k z_k f_k + i_cap, with ionic and capacitive currents positive when
+  leaving the neuron. This gives a linear elliptic equation for φ each step:
+  ∇·(σ∇φ) = −F Σ_k z_k ∇·(D_k ∇c_k) − F Σ_k z_k f_k − i_cap, with σ = (F/ψ) Σ_k D_k z_k² c_k.
 - Porous medium: D̃_k = D_k/λ², λ = 1.6; sources f̃_k = f_k/α, α = 0.2.
 - Species: Na⁺, K⁺, X⁻ (generic anion with Cl⁻ properties), Ca²⁺. ECS baseline (mM):
   Na 150, K 3, X 155.8, Ca 1.4.
@@ -60,9 +61,11 @@ Constants: R = 8.314 J/(K mol), F = 9.648·10⁴ C/mol, T = 300 K.
   per-ion transmembrane currents and the capacitive current as point sources. Here a
   multi-compartment Hodgkin-Huxley neuron runs in Rust alongside the KNP solver
   (one-way coupling, as in the paper).
-- Numerics (this repo): cell-centered finite volumes on a uniform 3-D grid (e.g. 64×64×32 over
-  ~1 mm), semi-implicit time stepping, potential solved with preconditioned CG warm-started from
-  the previous step. Sources are deposited into the grid cell containing each compartment centre.
+- Numerics (this repo, `crates/ed-knp`): cell-centered finite volumes on a uniform 3-D grid
+  (default 64×64×32 over 1×1×0.5 mm). Each step: backward Euler diffusion per species, then an
+  electroneutral projection that solves for φ (multigrid-preconditioned CG, warm-started) and
+  applies the drift, so Δt is not bound by a diffusion CFL limit. Sources are deposited into
+  the grid cell containing each compartment centre.
 
 ## Scale 2: KNP-EMI (Publication 2)
 
