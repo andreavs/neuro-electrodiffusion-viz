@@ -30,3 +30,17 @@
   .kv-main, .kv-plots { grid-template-columns: 1fr; }
   .kv-stage, .kv-canvas { min-height: 360px; }
 }
+
+.kv-scenarios {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem 1rem;
+  align-items: baseline;
+  margin: 0 0 0.75rem;
+  font-size: 0.95rem;
+}
+.kv-scenarios a[aria-current='page'] {
+  font-weight: 600;
+  text-decoration: none;
+  color: inherit;
+}

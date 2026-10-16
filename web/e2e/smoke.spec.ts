@@ -100,3 +100,18 @@ test('deep link boots a scale directly and the brand link returns to the menu', 
   await expect(page.locator('html')).not.toHaveAttribute('data-solver');
   expect(errors).toEqual([]);
 });
+
+test('tissue scenario bar switches to spreading depression, which loads and renders', async ({ page }) => {
+  const errors = watchErrors(page);
+  await page.goto('./#/knp');
+  await expectSolverReady(page, errors);
+  await page.locator('.kv-scenarios a[href="#/knp/spreading"]').click();
+  await expect(page).toHaveURL(/#\/knp\/spreading$/);
+  await expect(page.locator('.kv-scenarios [aria-current="page"]')).toHaveText(/Spreading depression/);
+  await expectSolverReady(page, errors);
+  const canvas = page.locator('#view canvas').first();
+  await expect.poll(() => isNonBlank(page, canvas), { message: 'canvas should not be blank', timeout: 10_000 }).toBe(true);
+  await expect.poll(() => page.locator('[data-out="cost"]').innerText(), { timeout: 10_000 }).toMatch(/per cell/);
+  await page.waitForTimeout(250);
+  expect(errors).toEqual([]);
+});
