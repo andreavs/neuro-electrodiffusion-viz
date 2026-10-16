@@ -281,7 +281,10 @@ export function createKnpView(): ScaleView {
       const draw = (frame: FrameMessage) => {
         const f = Object.fromEntries(frame.fields.map((x) => [x.name, x.data]));
         const field = frame.fields[0]!;
-        if (size && f.compartments!.length !== builtComps) teardown();
+        if (size && f.compartments!.length !== builtComps) {
+          teardown();
+          lastTime = Infinity; // a different cell: clear the plots below
+        }
         if (!size) build(frame, f);
         if (field.name !== shownField) {
           shownField = field.name;

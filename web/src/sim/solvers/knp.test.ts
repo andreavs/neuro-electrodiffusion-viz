@@ -56,6 +56,9 @@ describe('knp solver adapter', () => {
     expect(() => solver.setParams({ cell: 'nope' })).toThrow();
     solver.setParams({ cell: 'simple' });
     expect(sims).toHaveLength(2);
+    expect(() => solver.setParams({ cell: 'hay', field: 'nope' })).toThrow();
+    expect(sims).toHaveLength(2);
+    expect(sims[1]![1].freed).toBe(false);
   });
   it('takes at least one step, and as many as fit the budget', () => {
     const slow = setup(20);

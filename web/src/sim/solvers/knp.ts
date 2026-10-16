@@ -99,31 +99,37 @@ export function makeKnpSolver(
   let steps = 0;
   let msPerStep = 0;
 
+  /** Sends the numeric settings in `p` to `target`. */
+  const configure = (target: KnpWasm, p: Params) => {
+    if ('synRate' in p) target.set_syn_rate(Number(p.synRate));
+    if ('stim' in p) target.set_stim(Number(p.stim));
+    if ('dt' in p) target.set_dt(Number(p.dt));
+  };
+
   /** Applies `p` to the simulation, then records it; a rejected value throws and is not kept. */
   const apply = (p: Params) => {
     if ('field' in p && !KNP_FIELDS.some((f) => f.value === p.field)) throw new Error(`unknown field ${p.field}`);
+    const nextProbes = 'probes' in p ? Float64Array.from(decodeProbes(String(p.probes))) : probes;
     if ('cell' in p && p.cell !== params.cell) {
       if (!KNP_CELLS.some((c) => c.value === p.cell)) throw new Error(`unknown cell ${p.cell}`);
-      // A new cell needs a new column: start over with the current settings.
+      // A new cell needs a new column: start over with the current settings,
+      // and keep the old simulation if any of them is rejected.
       const next = create(1, String(p.cell));
+      try {
+        configure(next, { ...params, ...p });
+      } catch (e) {
+        next.free();
+        throw e;
+      }
       sim.free();
       sim = next;
       trace = new TraceBuffer();
       steps = 0;
-      msPerStep = 0;
-      params.cell = p.cell;
-      const all: Params = { ...params, ...p };
-      delete all.cell;
-      apply(all);
-      return;
+    } else {
+      configure(sim, p);
     }
-    if ('synRate' in p) sim.set_syn_rate(Number(p.synRate));
-    if ('stim' in p) sim.set_stim(Number(p.stim));
-    if ('dt' in p) {
-      sim.set_dt(Number(p.dt));
-      msPerStep = 0; // a step's cost grows with dt
-    }
-    if ('probes' in p) probes = Float64Array.from(decodeProbes(String(p.probes)));
+    if ('cell' in p || 'dt' in p) msPerStep = 0; // a step's cost grows with dt and the cell
+    probes = nextProbes;
     Object.assign(params, p);
   };
   apply({ ...params });
