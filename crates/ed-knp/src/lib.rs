@@ -1,6 +1,6 @@
 //! Tissue-scale KNP electrodiffusion with point-source neurons (Publication 1).
 //!
-//! `KnpSolver` advances ion concentrations in the extracellular space (ECS) of a porous
+//! [`KnpSolver`] advances ion concentrations in the extracellular space (ECS) of a porous
 //! medium on a uniform cell-centred 3-D grid, with the potential from the electroneutral
 //! Kirchhoff-Nernst-Planck equation (Solbrå et al. 2018, Eq 12):
 //!
@@ -14,10 +14,13 @@
 //! when positive charge leaves the neuron, so the source term is the total membrane
 //! current, as in volume-conductor theory (Eq 40), and the ECS charge changes only by
 //! `∂ρ/∂t = -ĩ_cap`: the charge stored on the outside of the membrane.
+//!
+//! See [`KnpSolver::step`] for the time stepping.
 
-// Used by the solver, which lands in a follow-up change.
-#[allow(dead_code)]
 mod flux;
+mod solver;
+
+pub use solver::{KnpSolver, StepStats, CHARGE_TOL};
 
 use ed_core::ions::{IonSpecies, CA, CL, K, NA};
 
@@ -40,7 +43,7 @@ pub enum OuterBoundary {
     NoFlux,
 }
 
-/// Parameters of a `KnpSolver`.
+/// Parameters of a [`KnpSolver`].
 #[derive(Clone, Debug, PartialEq)]
 pub struct KnpParams {
     /// Cells per axis. Even counts (such as 64×64×32) suit the multigrid preconditioner.
@@ -53,7 +56,7 @@ pub struct KnpParams {
     pub volume_fraction: f64,
     pub ions: Vec<Ion>,
     pub boundary: OuterBoundary,
-    /// Time step (ms). `KnpSolver::step` subdivides it if it exceeds the stability limit.
+    /// Time step (ms). [`KnpSolver::step`] subdivides it if it exceeds the stability limit.
     pub dt: f64,
     /// Temperature (K).
     pub temperature: f64,

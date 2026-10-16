@@ -57,9 +57,15 @@ Constants: R = 8.314 J/(K mol), F = 9.648·10⁴ C/mol, T = 300 K.
   per-ion transmembrane currents and the capacitive current as point sources. Here a
   multi-compartment Hodgkin-Huxley neuron runs in Rust alongside the KNP solver
   (one-way coupling, as in the paper).
-- Numerics (this repo): cell-centered finite volumes on a uniform 3-D grid (e.g. 64×64×32 over
-  ~1 mm), semi-implicit time stepping, potential solved with preconditioned CG warm-started from
-  the previous step. Sources are deposited into the grid cell containing each compartment centre.
+- Numerics (this repo, `crates/ed-knp`): cell-centered finite volumes on a uniform 3-D grid
+  (default 64×64×32 over 1000×1000×500 µm). Each step solves the potential equation with
+  multigrid-preconditioned CG (warm start extrapolated from the last two steps), then moves the
+  ions with explicit forward Euler; the diffusive stability limit is ~34 ms on the default grid,
+  and longer steps are split. Drift fluxes are scaled so that Σ z J matches the potential
+  operator exactly, and any charge left by the CG tolerance is fed back into the next solve, so
+  Σ z c stays within 1e-8 mM of its expected value. Membrane currents are positive outward; the
+  total membrane current is the source (Eq 40), so ∂ρ/∂t = −ĩ_cap. Sources are deposited into
+  the grid cell containing each compartment centre.
 
 ## Scale 2: KNP-EMI (Publication 2)
 
