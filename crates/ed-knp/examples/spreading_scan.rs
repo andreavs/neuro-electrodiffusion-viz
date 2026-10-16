@@ -74,7 +74,9 @@ fn main() {
         .unwrap_or(12_000.0);
     let mut cases = Vec::new();
     for g_nap in [0.0, 0.1, 0.15, 0.2, 0.25, 0.3] {
-        for driven in [1, 10, 100] {
+        // Only the least excitable tissues need 1000 driven cells to show anything.
+        let most = if g_nap < 0.15 { 1000 } else { 100 };
+        for driven in [1, 10, 100, 1000].into_iter().filter(|&d| d <= most) {
             cases.push(Case {
                 g_nap,
                 driven,
@@ -82,14 +84,13 @@ fn main() {
             });
         }
     }
-    for driven in [1000] {
-        for g_nap in [0.0, 0.1] {
-            cases.push(Case {
-                g_nap,
-                driven,
-                ..BASE
-            });
-        }
+    // Controls: no drive at all.
+    for g_nap in [0.25, 0.3] {
+        cases.push(Case {
+            g_nap,
+            driven: 0,
+            ..BASE
+        });
     }
     for pump in [0.8, 1.2] {
         cases.push(Case { pump, ..BASE });
@@ -100,7 +101,6 @@ fn main() {
     for neurons in [5000, 20_000] {
         cases.push(Case { neurons, ..BASE });
     }
-    cases.push(Case { driven: 0, ..BASE });
 
     let next = AtomicUsize::new(0);
     let results: Mutex<Vec<Option<Outcome>>> = Mutex::new((0..cases.len()).map(|_| None).collect());

@@ -34,5 +34,6 @@ npm run build                   # production build into web/dist
 
 See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for the models and code layout, and
 [CONTRIBUTING.md](CONTRIBUTING.md) for the workflow.
+
 [docs/spreading-depression.md](docs/spreading-depression.md) asks whether one neuron can start
 spreading depression through the extracellular ions alone.
