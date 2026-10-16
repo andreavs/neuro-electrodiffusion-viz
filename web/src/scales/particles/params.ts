@@ -20,7 +20,7 @@ export const PARTICLE_PARAMS = [
       { value: 'dendrite', label: 'Ions spread into the dendrite' },
       { value: 'absorb', label: 'Ions are absorbed' },
     ],
-    default: 'absorb',
+    default: 'dendrite',
     help: 'Either way the exit time is when an ion first leaves through the neck base',
   },
   {

@@ -18,23 +18,32 @@ const MAX_IONS = 100_000;
 const GLOW_BRIGHTNESS = 1;
 const NECK_COLOR = '#ff9f1c';
 const HEAD_COLOR = '#4cc9f0';
+const DENDRITE_COLOR = '#90e06c';
 const FIELD_COLOR = '#e4572e';
 const REF_COLOR = '#8d93a5';
 
-/** Two-colour lookup: values below 0.5 → neck colour, above → head colour. */
+/** Region lookup over [0, 2]: 0 → neck, 1 → head, 2 → escaped into the dendrite. */
 function regionColormap(): Colormap {
   const lut = new Uint8Array(256 * 4);
-  const [a, b] = [new THREE.Color(NECK_COLOR), new THREE.Color(HEAD_COLOR)];
+  const colors = [NECK_COLOR, HEAD_COLOR, DENDRITE_COLOR].map((c) => new THREE.Color(c));
   for (let i = 0; i < 256; i++) {
     // LUT bytes are sRGB, like every colormap (THREE.Color holds linear components).
-    const c = (i < 128 ? a : b).getRGB({ r: 0, g: 0, b: 0 }, THREE.SRGBColorSpace);
+    const c = colors[Math.min(2, Math.floor((3 * i) / 256))]!.getRGB({ r: 0, g: 0, b: 0 }, THREE.SRGBColorSpace);
     lut.set([Math.round(c.r * 255), Math.round(c.g * 255), Math.round(c.b * 255), 255], 4 * i);
   }
   return { name: 'regions', lut, diverging: false };
 }
 
-/** Spine wall, absorbing base and a stub of the parent dendrite. Rebuilt when the shape changes. */
-function buildSpine(profile: Float32Array, neckRadius: number): THREE.Group {
+interface Dendrite {
+  radius: number;
+  halfLength: number;
+}
+
+/**
+ * Spine wall, neck base and the parent dendrite: the whole simulated dendrite when ions spread
+ * into it, else a short stub under an absorbing base. Rebuilt when the shape changes.
+ */
+function buildSpine(profile: Float32Array, neckRadius: number, dendrite: Dendrite | null): THREE.Group {
   const group = new THREE.Group();
   const pts: THREE.Vector2[] = [];
   for (let i = 0; i < profile.length; i += 2) pts.push(new THREE.Vector2(profile[i], profile[i + 1]));
@@ -50,16 +59,25 @@ function buildSpine(profile: Float32Array, neckRadius: number): THREE.Group {
     }),
   );
   wall.rotation.x = Math.PI / 2; // lathe axis y → z (Z-up)
+  // An open base is drawn as a ring where the exit is timed; an absorbing one as a disk.
   const base = new THREE.Mesh(
-    new THREE.CircleGeometry(neckRadius, 48),
+    dendrite ? new THREE.RingGeometry(0.8 * neckRadius, neckRadius, 48) : new THREE.CircleGeometry(neckRadius, 48),
     new THREE.MeshBasicMaterial({ color: FIELD_COLOR, transparent: true, opacity: 0.7, side: THREE.DoubleSide }),
   );
+  const radius = dendrite?.radius ?? 0.45;
+  const length = dendrite ? 2 * dendrite.halfLength : 2.4;
   const shaft = new THREE.Mesh(
-    new THREE.CylinderGeometry(0.45, 0.45, 2.4, 48, 1, true),
-    new THREE.MeshStandardMaterial({ color: 0x8890a8, transparent: true, opacity: 0.12, depthWrite: false, side: THREE.DoubleSide }),
+    new THREE.CylinderGeometry(radius, radius, length, 64, 1, true),
+    new THREE.MeshStandardMaterial({
+      color: dendrite ? 0xb8c4e0 : 0x8890a8,
+      transparent: true,
+      opacity: dendrite ? 0.16 : 0.12,
+      depthWrite: false,
+      side: THREE.DoubleSide,
+    }),
   );
   shaft.rotation.z = Math.PI / 2; // cylinder axis y → x
-  shaft.position.z = -0.45;
+  shaft.position.z = -radius;
   group.add(wall, base, shaft);
   return group;
 }
@@ -97,8 +115,9 @@ export function createParticlesView(): ScaleView {
           <header class="pv-head">
             <h2>${info.title}</h2>
             <p class="muted">Ca²⁺ ions are released in the head of a dendritic spine and random-walk until they leave
-              through the base of the neck. An electric potential drop across the spine adds a drift that speeds up or
-              slows down their escape. Following Publication 3 of the thesis, the mean first passage time (MFPT) is
+              through the base of the neck, then spread along the parent dendrite (or, as in the thesis, are absorbed
+              there). An electric potential drop across the spine adds a drift that speeds up or slows down their
+              escape. Following Publication 3 of the thesis, the mean first passage time (MFPT) out of the neck is
               compared with and without the field.</p>
           </header>
           <div class="pv-main">
@@ -107,7 +126,8 @@ export function createParticlesView(): ScaleView {
               <div class="pv-legend">
                 <span><i class="pv-swatch" style="background:${HEAD_COLOR}"></i>in the head</span>
                 <span><i class="pv-swatch" style="background:${NECK_COLOR}"></i>in the neck</span>
-                <span><i class="pv-swatch" style="background:${FIELD_COLOR}"></i>absorbing base · drift</span>
+                <span><i class="pv-swatch" style="background:${DENDRITE_COLOR}"></i>escaped into the dendrite</span>
+                <span><i class="pv-swatch" style="background:${FIELD_COLOR}"></i>neck base · drift</span>
                 <label><input type="checkbox" data-arrows checked /> field arrows</label>
               </div>
             </div>
@@ -117,14 +137,19 @@ export function createParticlesView(): ScaleView {
             <figure><figcaption>Fraction of ions still in the spine</figcaption><canvas data-plot="survival"></canvas></figure>
             <figure><figcaption>Exit-time distribution (fraction per bin)</figcaption><canvas data-plot="hist"></canvas></figure>
             <dl class="pv-readout">
-              <dt>Ions inside</dt><dd data-out="alive">–</dd>
+              <dt>Ions in the spine</dt><dd data-out="alive">–</dd>
+              <dt>In the dendrite</dt><dd data-out="dendrite">–</dd>
               <dt><i class="pv-swatch" style="background:${FIELD_COLOR}"></i>MFPT</dt><dd data-out="mfpt">–</dd>
               <dt><i class="pv-swatch" style="background:${REF_COLOR}"></i>MFPT, no field</dt><dd data-out="ref">–</dd>
             </dl>
           </div>
         </section>`;
       const q = <T extends HTMLElement>(sel: string) => root.querySelector<T>(sel)!;
-      const out = { alive: q('[data-out="alive"]'), mfpt: q('[data-out="mfpt"]'), ref: q('[data-out="ref"]') };
+      const out = {
+        alive: q('[data-out="alive"]'),
+        dendrite: q('[data-out="dendrite"]'),
+        mfpt: q('[data-out="mfpt"]'), ref: q('[data-out="ref"]'),
+      };
       q('.pv-head').append(createAboutPanel('particles'));
       const panel = new ControlPanel(q('.pv-side'), client, PARTICLE_PARAMS);
 
@@ -135,14 +160,15 @@ export function createParticlesView(): ScaleView {
         return;
       }
       const view = scene;
-      view.frameBox(new THREE.Vector3(1.4, 1.4, 2.4));
-      view.camera.position.z += 0.9;
-      view.controls.target.set(0, 0, 0.9);
+      // Spine above, a stretch of the dendrite below.
+      view.frameBox(new THREE.Vector3(3.6, 1.4, 2.6));
+      view.camera.position.z += 0.7;
+      view.controls.target.set(0, 0, 0.7);
       view.scene.add(new THREE.HemisphereLight(0xffffff, 0x445066, 1.6));
       const sun = new THREE.DirectionalLight(0xffffff, 1.2);
       sun.position.set(2, -3, 4);
       view.scene.add(sun);
-      const cloud = new PointCloud({ capacity: MAX_IONS, size: 0.014, colormap: regionColormap(), range: { min: 0, max: 1 } });
+      const cloud = new PointCloud({ capacity: MAX_IONS, size: 0.014, colormap: regionColormap(), range: { min: 0, max: 2 } });
       view.scene.add(cloud.points);
       let spine: THREE.Group | null = null;
       let spineKey = '';
@@ -203,14 +229,16 @@ export function createParticlesView(): ScaleView {
         const profile = f.profile ?? new Float32Array(0);
         let sum = 0;
         for (let i = 0; i < profile.length; i++) sum += profile[i]! * (i + 1);
-        const key = `${profile.length}:${sum}`;
+        const radius = stats.dendriteRadius ?? 0;
+        const dendrite = radius > 0 ? { radius, halfLength: stats.dendriteHalfLength ?? 0 } : null;
+        const key = `${profile.length}:${sum}:${radius}:${dendrite?.halfLength}`;
         if (key !== spineKey && profile.length >= 4) {
           spineKey = key;
           if (spine) {
             disposeObject(spine);
             view.scene.remove(spine);
           }
-          spine = buildSpine(profile, stats.neckRadius ?? 0.1);
+          spine = buildSpine(profile, stats.neckRadius ?? 0.1, dendrite);
           view.scene.add(spine);
           geom = { neckTop: stats.neckTop ?? 1, top: profile[profile.length - 1]! };
           refreshArrows();
@@ -219,7 +247,8 @@ export function createParticlesView(): ScaleView {
         const alive = stats.alive ?? 0;
         const ref = (stats.hasReference ?? 0) > 0;
 
-        const tEnd = Math.max(frame.timeMs, 1e-3);
+        // The curves end at the last exit; ions may still be spreading in the dendrite after it.
+        const tEnd = Math.max(stats.passageTime ?? frame.timeMs, 1e-3);
         survivalPlot.draw({
           x: [0, tEnd],
           y: [0, 1],
@@ -242,6 +271,7 @@ export function createParticlesView(): ScaleView {
         });
         // DOM writes last, after the canvases are drawn.
         out.alive.textContent = `${alive.toLocaleString()} of ${(stats.released ?? 0).toLocaleString()}`;
+        out.dendrite.textContent = dendrite ? (stats.inDendrite ?? 0).toLocaleString() : 'absorbed at the base';
         out.mfpt.textContent = formatMfpt(mfptReadout(stats, '', alive));
         const refLeft = (stats.refReleased ?? 0) - (stats.refEscaped ?? 0);
         out.ref.textContent = ref ? formatMfpt(mfptReadout(stats, 'ref', refLeft)) : 'field is off';
