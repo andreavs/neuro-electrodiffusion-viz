@@ -250,7 +250,11 @@ impl DiffusionOperator {
     /// Sets the interior face coefficients explicitly, replacing the harmonic means of the
     /// cell values. `face[a][cell]` (≥ 0) couples `cell` to its upper neighbour along axis
     /// `a`; entries on the last layer of an axis, and for inactive axes, are ignored.
-    /// Allocates on the first call only. Call
+    /// Once set, face values stay in use ([`update_sigma`](Self::update_sigma) then only
+    /// affects Dirichlet faces). Zero faces can cut the domain into pieces: a pure-Neumann
+    /// operator then has one null vector per piece, which CG with
+    /// [`NullSpace::Constant`](super::NullSpace::Constant) cannot handle, so keep the
+    /// positive faces connected or add a shift. Allocates on the first call only. Call
     /// [`Multigrid::update`](super::Multigrid::update) afterwards if one is in use.
     pub fn set_face_sigma(&mut self, face: [&[f64]; 3]) {
         let n = self.grid.len();
@@ -259,6 +263,7 @@ impl DiffusionOperator {
             .face_sigma
             .get_or_insert_with(|| [vec![0.0; n], vec![0.0; n], vec![0.0; n]]);
         for (d, f) in dst.iter_mut().zip(face) {
+            debug_assert!(f.iter().all(|&v| v >= 0.0), "face coefficients must be ≥ 0");
             d.copy_from_slice(f);
         }
         self.recompute();

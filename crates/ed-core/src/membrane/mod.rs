@@ -397,8 +397,9 @@ impl MembranePatches {
     /// channel currents over `[t, t + dt]` (µA/cm², outward positive) into `mean`.
     ///
     /// The means integrate each substep's exponential φ_M trajectory exactly, so they are
-    /// consistent with the potential update: with `i_ext = None`,
-    /// `Σ_k mean_k = −C_M (φ_M(t + dt) − φ_M(t)) / dt` to rounding. A coupled solver can
+    /// consistent with the potential update:
+    /// `Σ_k mean_k = −C_M (φ_M(t + dt) − φ_M(t)) / dt + ī_ext` to rounding, where `ī_ext` is
+    /// the injected current (zero for `i_ext = None`). A coupled solver can
     /// therefore move exactly the charge that left the membrane capacitor.
     pub fn advance_with_mean_currents(
         &mut self,

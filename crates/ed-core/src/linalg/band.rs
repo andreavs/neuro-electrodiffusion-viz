@@ -9,8 +9,13 @@ use super::{CsrMatrix, Preconditioner};
 ///
 /// Pivots that vanish relative to their diagonal entry (a singular matrix such as a
 /// pure-Neumann operator) are replaced by that diagonal entry. The result is then the
-/// factor of `A` plus a rank-one term, which is still an SPD preconditioner for CG with
-/// [`NullSpace::Constant`](super::NullSpace::Constant).
+/// factor of `A` plus a low-rank term, which is still an SPD preconditioner for CG with
+/// [`NullSpace::Constant`](super::NullSpace::Constant). Rows that are entirely zero (cells
+/// with no coupling) get an infinite pivot, so the solve returns 0 there, like
+/// [`Jacobi`](super::Jacobi). The solve is exact only when no pivot was replaced; a
+/// nonsingular matrix with couplings weaker than `1e-10` of its diagonal can also trigger a
+/// replacement. [`replaced_pivots`](Self::replaced_pivots) reports how many were replaced
+/// (one per connected piece for a pure-Neumann operator).
 ///
 /// A typical use is to factor once and keep the factor as a preconditioner while the
 /// coefficients drift slowly, refactoring with [`factor`](Self::factor) when CG needs
@@ -21,6 +26,7 @@ pub struct BandCholesky {
     w: usize,
     /// Row `i` holds `L[i][i−w..=i]` at `l[i·(w+1)..(i+1)·(w+1)]` (zero-padded on top).
     l: Vec<f64>,
+    replaced: usize,
 }
 
 /// Relative size below which a pivot counts as zero.
@@ -39,6 +45,7 @@ impl BandCholesky {
             n,
             w,
             l: vec![0.0; n * (w + 1)],
+            replaced: 0,
         };
         f.factor(a);
         f
@@ -53,6 +60,11 @@ impl BandCholesky {
         self.n == 0
     }
 
+    /// Number of pivots replaced in the last factorisation (see the type docs).
+    pub fn replaced_pivots(&self) -> usize {
+        self.replaced
+    }
+
     /// Half-bandwidth `w`.
     pub fn bandwidth(&self) -> usize {
         self.w
@@ -65,6 +77,7 @@ impl BandCholesky {
         let (n, w) = (self.n, self.w);
         let s = w + 1;
         self.l.fill(0.0);
+        self.replaced = 0;
         for i in 0..n {
             for (j, v) in a.row(i) {
                 if j <= i {
@@ -89,8 +102,11 @@ impl BandCholesky {
                     let a_ii = a.get(i, i);
                     if v > PIVOT_TOL * a_ii.abs() {
                         v.sqrt()
+                    } else if a_ii == 0.0 {
+                        f64::INFINITY
                     } else {
-                        a_ii.abs().max(f64::MIN_POSITIVE).sqrt()
+                        self.replaced += 1;
+                        a_ii.abs().sqrt()
                     }
                 };
             }
@@ -170,5 +186,42 @@ mod tests {
         };
         let stats = Pcg::new(op.len()).solve(&op, &mut chol, &b, &mut x, &opts);
         assert!(stats.converged && stats.iterations <= 3, "{stats:?}");
+        assert_eq!(chol.replaced_pivots(), 1);
+    }
+
+    #[test]
+    fn uncoupled_cell_gets_zero_correction() {
+        let grid = Grid::new_3d([4, 3, 6], [1.0; 3]);
+        let mut sigma = vec![1.0; grid.len()];
+        sigma[0] = 0.0;
+        let op = DiffusionOperator::new(grid, BoundaryConditions::neumann(), &sigma);
+        let mut chol = BandCholesky::new(&op.to_csr());
+        let mut b: Vec<f64> = (0..op.len()).map(|i| (i as f64 * 0.9).sin()).collect();
+        b[0] = 0.0;
+        let mean = b[1..].iter().sum::<f64>() / (b.len() - 1) as f64;
+        b[1..].iter_mut().for_each(|v| *v -= mean);
+        let mut z = vec![1.0; op.len()];
+        chol.apply(&b, &mut z);
+        assert_eq!(z[0], 0.0);
+        assert!(z.iter().all(|v| v.is_finite()));
+        let mut x = vec![0.0; op.len()];
+        let opts = CgOptions {
+            rtol: 1e-10,
+            null_space: NullSpace::Constant,
+            ..Default::default()
+        };
+        let stats = Pcg::new(op.len()).solve(&op, &mut chol, &b, &mut x, &opts);
+        assert!(stats.converged, "{stats:?}");
+    }
+
+    #[test]
+    fn empty_and_diagonal_matrices() {
+        let empty = BandCholesky::new(&CsrMatrix::from_triplets(0, 0, &[]));
+        assert!(empty.is_empty());
+        let d = BandCholesky::new(&CsrMatrix::from_triplets(2, 2, &[(0, 0, 4.0), (1, 1, 9.0)]));
+        assert_eq!(d.bandwidth(), 0);
+        let mut x = [8.0, 9.0];
+        d.solve_in_place(&mut x);
+        assert_eq!(x, [2.0, 1.0]);
     }
 }

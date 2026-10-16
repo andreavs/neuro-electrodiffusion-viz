@@ -15,7 +15,9 @@ use super::{DiffusionOperator, Grid, LinearOperator, Preconditioner};
 /// is a symmetric operator and can precondition CG.
 ///
 /// The preconditioner keeps its own copy of the operator: call [`update`](Self::update)
-/// after every [`DiffusionOperator::update_sigma`] or [`DiffusionOperator::set_shift`],
+/// after every [`DiffusionOperator::update_sigma`], [`DiffusionOperator::set_shift`] or
+/// [`DiffusionOperator::set_face_sigma`] (face values must already be set when the
+/// multigrid is built),
 /// or CG keeps working but converges more slowly.
 ///
 /// Coarsening needs even cell counts, so grids of size `k·2^m` with small `k` (such as
