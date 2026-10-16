@@ -5,6 +5,7 @@ describe('shard helpers', () => {
   it('uses one shard per 10 000 ions, leaving two cores free', () => {
     expect([1000, 15_000, 25_000, 1e6].map((n) => shardCount(n, 5))).toEqual([1, 2, 3, 3]);
     expect(shardCount(1e6, 1)).toBe(1);
+    expect(shardCount(4e6, 4)).toBe(4);
     expect(splitEvenly(10, 3)).toEqual([4, 3, 3]);
   });
 

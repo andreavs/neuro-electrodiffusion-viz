@@ -2,6 +2,8 @@
 
 /** Fewer ions than this per shard and the messaging costs more than the extra core gains. */
 const MIN_IONS_PER_SHARD = 10_000;
+/** `ed_particles::sim::MAX_PARTICLES`. */
+const MAX_IONS_PER_SHARD = 1_000_000;
 
 /**
  * Shards for `n` ions on a machine with `cores` hardware threads. Two threads are left for
@@ -9,7 +11,9 @@ const MIN_IONS_PER_SHARD = 10_000;
  */
 export function shardCount(n: number, cores: number): number {
   const byCores = Math.max(1, Math.min(16, cores - 2));
-  return Math.max(1, Math.min(byCores, Math.ceil(n / MIN_IONS_PER_SHARD)));
+  const wanted = Math.max(1, Math.min(byCores, Math.ceil(n / MIN_IONS_PER_SHARD)));
+  // One wasm population holds at most a million ions, so very large runs oversubscribe.
+  return Math.max(wanted, Math.ceil(n / MAX_IONS_PER_SHARD));
 }
 
 /** Splits `n` into `k` near-equal parts, larger ones first. */
