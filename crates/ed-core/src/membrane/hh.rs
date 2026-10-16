@@ -72,6 +72,42 @@ pub fn rates_n(phi_m: f64, v_rest: f64) -> Rates {
     }
 }
 
+/// Rates of all three gates `(m, h, n)` at once, from two exponentials instead of six:
+/// `e^{−v/20}`, `e^{−v/10}` and the `vtrap` terms are powers of `e^{−v/80}`. Agrees with
+/// [`rates_m`], [`rates_h`] and [`rates_n`] to rounding.
+#[inline]
+pub fn rates_all(phi_m: f64, v_rest: f64) -> (Rates, Rates, Rates) {
+    let v = phi_m - v_rest;
+    let e80 = (-v / 80.0).exp();
+    let e20 = (e80 * e80) * (e80 * e80);
+    let e10 = e20 * e20;
+    // x / (e^{x/10} − 1) with e^{x/10} = scale · e^{−v/10}. Near x = 0 the subtraction
+    // cancels and amplifies the few-ulp error of e^{−v/10}, so use vtrap there.
+    let trap = |x: f64, scale: f64| {
+        if x.abs() < 0.5 {
+            vtrap(x, 10.0)
+        } else {
+            x / (scale * e10 - 1.0)
+        }
+    };
+    const E25: f64 = 12.182_493_960_703_473; // e^{2.5}
+    const E3: f64 = 20.085_536_923_187_668; // e^{3}
+    (
+        Rates {
+            alpha: 0.1 * trap(25.0 - v, E25),
+            beta: 4.0 * (-v / 18.0).exp(),
+        },
+        Rates {
+            alpha: 0.07 * e20,
+            beta: 1.0 / (E3 * e10 + 1.0),
+        },
+        Rates {
+            alpha: 0.01 * trap(10.0 - v, std::f64::consts::E),
+            beta: 0.125 * e80,
+        },
+    )
+}
+
 /// Steady-state (m, h, n) at potential `phi_m`.
 pub fn steady_state(phi_m: f64, v_rest: f64) -> (f64, f64, f64) {
     (
@@ -107,6 +143,33 @@ mod tests {
         }
         assert!((rates_m(-40.0, -65.0).alpha - 1.0).abs() < 1e-12);
         assert!((rates_n(-55.0, -65.0).alpha - 0.1).abs() < 1e-12);
+    }
+
+    #[test]
+    fn combined_rates_match_individual_rates() {
+        let close = |a: f64, b: f64| (a - b).abs() <= 1e-12 * b.abs().max(1.0);
+        let mut phi = -150.0;
+        while phi < 80.0 {
+            let (m, h, n) = rates_all(phi, -65.0);
+            for (r, s) in [
+                (m, rates_m(phi, -65.0)),
+                (h, rates_h(phi, -65.0)),
+                (n, rates_n(phi, -65.0)),
+            ] {
+                assert!(
+                    close(r.alpha, s.alpha) && close(r.beta, s.beta),
+                    "{phi}: {r:?} vs {s:?}"
+                );
+            }
+            phi += 0.37;
+        }
+        for phi in [
+            -40.0, -55.0, -40.00001, -54.99999, -40.0001, -40.003, -55.2, -39.6,
+        ] {
+            let (m, _, n) = rates_all(phi, -65.0);
+            assert!(close(m.alpha, rates_m(phi, -65.0).alpha));
+            assert!(close(n.alpha, rates_n(phi, -65.0).alpha));
+        }
     }
 
     #[test]
