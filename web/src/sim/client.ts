@@ -1,5 +1,4 @@
-import type { ScaleId } from '../scales/registry';
-import type { FrameMessage, FromWorker, Params, ToWorker } from './protocol';
+import type { FrameMessage, FromWorker, Params, SolverId, ToWorker } from './protocol';
 
 type Listener = (msg: FromWorker) => void;
 
@@ -104,7 +103,7 @@ export class SimClient {
     });
   }
 
-  create(scale: ScaleId, params: Params = {}): void {
+  create(scale: SolverId, params: Params = {}): void {
     this.mailbox.clear();
     this.send({ type: 'create', scale, params });
   }

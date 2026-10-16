@@ -6,6 +6,7 @@ use wasm_bindgen::prelude::*;
 pub mod emi;
 pub mod knp;
 pub mod particles;
+pub mod spreading;
 
 /// Crate version, used by the front end to confirm the WASM module loaded.
 #[wasm_bindgen]
