@@ -448,22 +448,24 @@ impl MembranePatches {
                     let phi_inf =
                         (g_na * self.e_na[i] + g_k * self.e_k[i] + g_cl * self.e_cl[i] + src) / g;
                     let x = h * g / c_m;
+                    let em1 = (-x).exp_m1();
                     if let Some([m_na, m_k, m_cl]) = &mut mean {
                         // Time average of φ_M over the substep: φ_inf + (φ − φ_inf)(1 − e⁻ˣ)/x.
-                        let phi_avg = phi_inf + (phi - phi_inf) * (-(-x).exp_m1() / x);
+                        let phi_avg = phi_inf - (phi - phi_inf) * (em1 / x);
                         m_na[i] += w * g_na * (phi_avg - self.e_na[i]);
                         m_k[i] += w * g_k * (phi_avg - self.e_k[i]);
                         m_cl[i] += w * g_cl * (phi_avg - self.e_cl[i]);
                     }
-                    phi_inf + (phi - phi_inf) * (-x).exp()
+                    phi_inf + (phi - phi_inf) * (1.0 + em1)
                 } else {
                     phi + h * src / c_m
                 };
                 self.phi_m[i] = new_phi;
                 if hh {
-                    self.m[i] = hh::rates_m(new_phi, v_rest).rush_larsen(self.m[i], h);
-                    self.h[i] = hh::rates_h(new_phi, v_rest).rush_larsen(self.h[i], h);
-                    self.n[i] = hh::rates_n(new_phi, v_rest).rush_larsen(self.n[i], h);
+                    let (rm, rh, rn) = hh::rates_all(new_phi, v_rest);
+                    self.m[i] = rm.rush_larsen(self.m[i], h);
+                    self.h[i] = rh.rush_larsen(self.h[i], h);
+                    self.n[i] = rn.rush_larsen(self.n[i], h);
                 }
             }
         }
