@@ -4,6 +4,7 @@
 use wasm_bindgen::prelude::*;
 
 pub mod emi;
+pub mod emi_slice;
 pub mod knp;
 pub mod particles;
 
