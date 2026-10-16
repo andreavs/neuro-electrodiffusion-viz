@@ -36,6 +36,7 @@ mod electroneutral;
 pub mod fv;
 pub mod hay;
 pub mod neuron;
+pub mod population;
 mod sources;
 pub mod tissue;
 
