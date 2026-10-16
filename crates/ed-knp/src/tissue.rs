@@ -20,15 +20,19 @@ pub const CA: usize = 3;
 
 /// Somatic potential (mV) an upward crossing of which counts as a spike.
 const SPIKE_THRESHOLD: f64 = 0.0;
-/// Trace samples kept when nobody drains them, so an unread trace cannot grow forever.
+/// Trace samples kept when nobody drains them (the newest win), so an unread trace cannot
+/// grow forever.
 const MAX_TRACE: usize = 1 << 16;
+/// Longest KNP step accepted, ms.
+pub const MAX_DT: f64 = 50.0;
 
 #[derive(Clone, Debug)]
 pub struct TissueConfig {
     pub knp: KnpConfig,
     /// Where the soma (the neuron's origin) sits in the grid, µm.
     pub soma: [f64; 3],
-    /// Neuron internal steps per somatic trace sample.
+    /// Neuron internal steps per somatic trace sample. Spikes are detected on these
+    /// samples, so keep it at a fraction of a millisecond.
     pub trace_every: usize,
 }
 
@@ -70,7 +74,8 @@ impl Tissue {
     /// Couples `neuron` to a new KNP solver. Panics if a compartment lies outside the grid.
     pub fn new(cfg: &TissueConfig, neuron: Neuron) -> Self {
         assert!(cfg.trace_every > 0, "trace_every must be positive");
-        let knp = KnpSolver::new(&cfg.knp);
+        let mut knp = KnpSolver::new(&cfg.knp);
+        knp.set_dt(whole_steps(cfg.knp.dt, neuron.params().dt));
         let positions: Vec<[f64; 3]> = neuron
             .centres()
             .iter()
@@ -122,10 +127,11 @@ impl Tissue {
         std::mem::take(&mut self.trace)
     }
 
-    /// Sets the KNP time step (ms), rounded to a whole number of neuron steps.
+    /// Sets the KNP time step (ms), rounded to a whole number of neuron steps. Panics
+    /// unless `0 < dt <= MAX_DT`.
     pub fn set_dt(&mut self, dt: f64) {
-        let h = self.neuron.params().dt;
-        self.knp.set_dt((dt / h).round().max(1.0) * h);
+        let dt = whole_steps(dt, self.neuron.params().dt);
+        self.knp.set_dt(dt);
     }
 
     /// Neuron steps per KNP step.
@@ -140,9 +146,10 @@ impl Tissue {
             self.spikes += 1;
         }
         self.above = up;
-        if self.trace.len() < 2 * MAX_TRACE {
-            self.trace.extend([self.neuron.time_ms(), v]);
+        if self.trace.len() >= 2 * MAX_TRACE {
+            self.trace.drain(..MAX_TRACE);
         }
+        self.trace.extend([self.neuron.time_ms(), v]);
     }
 
     /// Advances the neuron over one KNP step and deposits its mean currents.
@@ -169,6 +176,15 @@ impl Tissue {
         }
         electrode
     }
+}
+
+/// `dt` rounded to a whole number (at least one) of neuron steps `h`.
+fn whole_steps(dt: f64, h: f64) -> f64 {
+    assert!(
+        dt > 0.0 && dt <= MAX_DT,
+        "KNP time step must be in (0, {MAX_DT}] ms"
+    );
+    (dt / h).round().max(1.0) * h
 }
 
 impl Simulation for Tissue {
@@ -236,6 +252,9 @@ mod tests {
         let mut q = [0.0; 3];
         for _ in 0..40 {
             t.step(1);
+            // Ionic, capacitive and electrode currents cancel over the cell.
+            let net: f64 = t.acc.iter().map(|a| a.iter().sum::<f64>()).sum();
+            assert!((net - t.neuron.i_stim).abs() < 1e-9, "net {net}");
             for (k, acc) in t.acc[..3].iter().enumerate() {
                 q[k] += acc.iter().sum::<f64>() * t.knp.dt();
             }
@@ -281,6 +300,20 @@ mod tests {
         assert_eq!(t.substeps(), 4);
         t.set_dt(0.001);
         assert_eq!(t.substeps(), 1);
+        let cfg = TissueConfig {
+            knp: KnpConfig {
+                dt: 0.11,
+                ..small().knp
+            },
+            ..small()
+        };
+        assert_eq!(Tissue::new(&cfg, Neuron::pyramidal()).substeps(), 4);
+    }
+
+    #[test]
+    #[should_panic(expected = "KNP time step")]
+    fn infinite_dt_is_rejected() {
+        Tissue::new(&small(), Neuron::pyramidal()).set_dt(f64::INFINITY);
     }
 
     /// Release-mode timing of the default column:
