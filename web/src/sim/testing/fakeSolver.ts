@@ -14,6 +14,8 @@ export class FakeSolver implements WorkerSolver {
   actions: string[] = [];
   disposed = false;
   failOnAdvance = false;
+  /** When true, `advance` reports that nothing changed. */
+  finished = false;
 
   constructor(
     params: Params,
@@ -27,14 +29,16 @@ export class FakeSolver implements WorkerSolver {
     return typeof this.params.dt === 'number' ? this.params.dt : 0.1;
   }
 
-  advance(budgetMs: number): void {
+  advance(budgetMs: number): boolean {
     if (this.failOnAdvance) throw new Error('boom');
     this.advances++;
     this.budgets.push(budgetMs);
+    if (this.finished) return false;
     const n = typeof this.params.stepsPerAdvance === 'number' ? this.params.stepsPerAdvance : 10;
     this.steps += n;
     this.timeMs += n * this.dt;
     if (this.clock) this.clock.t += this.costMs;
+    return true;
   }
 
   frame(): SolverFrame {
