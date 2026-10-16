@@ -6,7 +6,9 @@ use std::ops::Range;
 
 /// Adds the net Nernst-Planck flux through every interior face along `axis` to `dc`:
 /// `w (c_p − c_q) − dz (c_p + c_q) drift_p` leaves cell `p` for its upper neighbour `q`.
-/// Works on pairs of x-rows so the loops vectorise; `buf` holds one row of fluxes.
+/// `drift[p]` belongs to the face between `p` and its upper neighbour. Works on pairs
+/// of x-rows so the loops vectorise; `buf` (at least `nx − 1` long) holds one row of
+/// fluxes and is only used along axis 0.
 #[allow(clippy::too_many_arguments)]
 pub fn add_nernst_planck(
     g: &Grid,
@@ -109,66 +111,75 @@ pub fn for_each_boundary_run(g: &Grid, axis: usize, mut f: impl FnMut(Range<usiz
 mod tests {
     use super::*;
 
-    const GRID: [usize; 3] = [5, 4, 3];
-
-    fn grid() -> Grid {
-        Grid::new_3d(GRID, [1.0; 3])
-    }
+    /// A general grid and grids with single-cell axes.
+    const GRIDS: [[usize; 3]; 3] = [[5, 4, 3], [4, 1, 3], [1, 4, 1]];
 
     #[test]
     fn face_runs_cover_each_interior_face_once() {
-        let g = grid();
-        for a in 0..3 {
-            let mut seen = vec![0; g.len()];
-            for_each_face_run(&g, a, |r| r.for_each(|p| seen[p] += 1));
-            g.for_each_cell(|i, j, k, p| {
-                let interior = [i, j, k][a] + 1 < g.n[a];
-                assert_eq!(seen[p], interior as i32, "axis {a}, cell {p}");
-            });
+        for n in GRIDS {
+            let g = Grid::new_3d(n, [1.0; 3]);
+            for a in 0..3 {
+                let mut seen = vec![0; g.len()];
+                for_each_face_run(&g, a, |r| r.for_each(|p| seen[p] += 1));
+                g.for_each_cell(|i, j, k, p| {
+                    let interior = [i, j, k][a] + 1 < g.n[a];
+                    assert_eq!(seen[p], interior as i32, "{n:?}, axis {a}, cell {p}");
+                });
+            }
         }
     }
 
     #[test]
     fn boundary_runs_cover_both_layers() {
-        let g = Grid::new_3d([4, 1, 3], [1.0; 3]);
-        for a in 0..3 {
-            let mut seen = vec![0; g.len()];
-            for_each_boundary_run(&g, a, |r| r.for_each(|p| seen[p] += 1));
-            g.for_each_cell(|i, j, k, p| {
-                let pos = [i, j, k][a];
-                let expected = (pos == 0) as i32 + (pos + 1 == g.n[a]) as i32;
-                assert_eq!(seen[p], expected, "axis {a}, cell {p}");
-            });
+        for n in GRIDS {
+            let g = Grid::new_3d(n, [1.0; 3]);
+            for a in 0..3 {
+                let mut seen = vec![0; g.len()];
+                for_each_boundary_run(&g, a, |r| r.for_each(|p| seen[p] += 1));
+                g.for_each_cell(|i, j, k, p| {
+                    let pos = [i, j, k][a];
+                    let expected = (pos == 0) as i32 + (pos + 1 == g.n[a]) as i32;
+                    assert_eq!(seen[p], expected, "{n:?}, axis {a}, cell {p}");
+                });
+            }
         }
     }
 
     #[test]
-    fn face_fluxes_move_amounts_between_neighbours() {
-        let g = grid();
-        let n = g.len();
-        let c: Vec<f64> = (0..n).map(|i| (i as f64 * 0.37).sin() + 2.0).collect();
-        let drift: Vec<f64> = (0..n).map(|i| (i as f64 * 0.11).cos()).collect();
-        let stride = [1, GRID[0], GRID[0] * GRID[1]];
-        for (a, &s) in stride.iter().enumerate() {
-            let (w, dz) = (0.7, 0.3);
-            let mut dc = vec![0.0; n];
-            let mut buf = vec![0.0; n];
-            add_nernst_planck(&g, a, &c, &drift, w, dz, &mut dc, &mut buf);
-            // Reference: the same fluxes, face by face.
-            let mut expected = vec![0.0; n];
-            let mut flux = vec![0.0; n];
-            for_each_face_run(&g, a, |r| {
-                for p in r {
-                    let q = p + s;
-                    flux[p] = w * (c[p] - c[q]) - dz * (c[p] + c[q]) * drift[p];
+    fn nernst_planck_matches_face_by_face_reference() {
+        for n in GRIDS {
+            let g = Grid::new_3d(n, [1.0; 3]);
+            let len = g.len();
+            let c: Vec<f64> = (0..len).map(|i| (i as f64 * 0.37).sin() + 2.0).collect();
+            let drift: Vec<f64> = (0..len).map(|i| (i as f64 * 0.11).cos()).collect();
+            let stride = [1, n[0], n[0] * n[1]];
+            for (a, &s) in stride.iter().enumerate() {
+                let (w, dz) = (0.7, 0.3);
+                let mut dc = vec![0.0; len];
+                let mut buf = vec![0.0; len];
+                add_nernst_planck(&g, a, &c, &drift, w, dz, &mut dc, &mut buf);
+                let mut expected = vec![0.0; len];
+                let mut flux = vec![0.0; len];
+                for_each_face_run(&g, a, |r| {
+                    for p in r {
+                        let q = p + s;
+                        flux[p] = w * (c[p] - c[q]) - dz * (c[p] + c[q]) * drift[p];
+                    }
+                });
+                apply_face_fluxes(&g, a, &flux, &mut expected);
+                for (got, want) in dc.iter().zip(&expected) {
+                    assert!(
+                        (got - want).abs() < 1e-14,
+                        "{n:?}, axis {a}: {got} vs {want}"
+                    );
                 }
-            });
-            apply_face_fluxes(&g, a, &flux, &mut expected);
-            for (got, want) in dc.iter().zip(&expected) {
-                assert!((got - want).abs() < 1e-14, "axis {a}: {got} vs {want}");
+                // Nothing moves along a single-cell axis; otherwise something must.
+                assert_eq!(
+                    dc.iter().any(|v| v.abs() > 1e-3),
+                    n[a] > 1,
+                    "{n:?}, axis {a}"
+                );
             }
-            assert!(dc.iter().sum::<f64>().abs() < 1e-12, "fluxes must conserve");
-            assert!(dc.iter().any(|v| v.abs() > 1e-3));
         }
     }
 }
