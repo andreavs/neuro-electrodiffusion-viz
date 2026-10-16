@@ -1,6 +1,7 @@
 /** Shared rendering toolkit for the scale views. */
-export { createScene, type SceneHandle, type SceneOptions } from './scene';
-export { viridis, coolwarm, sampleColormap, colormapGradient, LUT_SIZE, type Colormap } from './colormap';
+export { createScene, type BloomOptions, type SceneHandle, type SceneOptions } from './scene';
+export { getRenderStyle, setRenderStyle, watchRenderStyle, RENDER_STYLES, type RenderStyle } from './style';
+export { viridis, inferno, icefire, coolwarm, sampleColormap, colormapGradient, LUT_SIZE, type Colormap } from './colormap';
 export { createColormapTexture, setRange, setColormap, disposeObject, disposeMaterial } from './gpu';
 export { ExpandingRange, autoRange, type Range } from './range';
 export { extractSlice, sliceDims, fieldIndex, type Axis, type Shape3 } from './field';

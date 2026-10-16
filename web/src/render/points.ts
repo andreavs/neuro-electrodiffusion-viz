@@ -24,9 +24,10 @@ export class PointCloud implements Colormapped {
   readonly uniforms: ColormapUniforms & {
     uSize: THREE.IUniform<number>;
     uViewportHeight: THREE.IUniform<number>;
-    /** sRGB components (written raw to the framebuffer, like the LUTs). */
+    /** Linear-RGB components. */
     uColor: THREE.IUniform<THREE.Vector3>;
     uUseMap: THREE.IUniform<boolean>;
+    uGlow: THREE.IUniform<number>;
   };
   readonly capacity: number;
   private readonly position: THREE.BufferAttribute;
@@ -50,6 +51,7 @@ export class PointCloud implements Colormapped {
       uViewportHeight: { value: 1 },
       uColor: { value: new THREE.Vector3() },
       uUseMap: { value: opts.colormap !== undefined },
+      uGlow: { value: 0 },
     };
     const material = new THREE.ShaderMaterial({
       uniforms: this.uniforms,
@@ -69,13 +71,21 @@ export class PointCloud implements Colormapped {
         ${COLORMAP_GLSL}
         uniform vec3 uColor;
         uniform bool uUseMap;
+        uniform float uGlow;
         varying float vValue;
         void main() {
           vec2 p = gl_PointCoord * 2.0 - 1.0;
           float r2 = dot(p, p);
           if (r2 > 1.0) discard;
           vec3 base = uUseMap ? colormap(vValue) : uColor;
-          gl_FragColor = vec4(base * (1.0 - 0.35 * r2), 1.0);
+          if (uGlow > 0.0) {
+            // Additive soft sprite with a hot core: overlapping ions brighten into a glow.
+            float core = exp(-6.0 * r2);
+            gl_FragColor = vec4(base * (0.35 * (1.0 - r2) + 1.6 * core) * uGlow, 1.0);
+          } else {
+            gl_FragColor = vec4(base * pow(1.0 - 0.35 * r2, 2.2), 1.0); // sRGB-space edge darkening
+          }
+          #include <colorspace_fragment>
         }`,
     });
     this.setColor(opts.color ?? 0xffb000);
@@ -87,9 +97,23 @@ export class PointCloud implements Colormapped {
     };
   }
 
+  /**
+   * Glow look: soft additive sprites with HDR cores (no depth writes), meant
+   * for a dark stage with bloom, at the given brightness (lower it for dense
+   * clouds). Off: solid shaded discs.
+   */
+  setGlow(on: boolean, brightness = 1): void {
+    const m = this.points.material;
+    this.uniforms.uGlow.value = on ? brightness : 0;
+    m.blending = on ? THREE.AdditiveBlending : THREE.NormalBlending;
+    m.transparent = on;
+    m.depthWrite = !on;
+    m.needsUpdate = true;
+  }
+
   /** Uniform colour used when no colormap was given. */
   setColor(color: THREE.ColorRepresentation): void {
-    const c = new THREE.Color(color).getRGB({ r: 0, g: 0, b: 0 }, THREE.SRGBColorSpace);
+    const c = new THREE.Color(color);
     this.uniforms.uColor.value.set(c.r, c.g, c.b);
   }
 

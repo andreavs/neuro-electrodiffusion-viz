@@ -72,6 +72,7 @@ export class SlicePlane implements Colormapped {
         void main() {
           float v = texture2D(uData, vUv).r;
           gl_FragColor = vec4(colormap(v), uOpacity);
+          #include <colorspace_fragment>
         }`,
     });
 
