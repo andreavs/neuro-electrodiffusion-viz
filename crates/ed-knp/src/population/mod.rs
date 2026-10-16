@@ -2,7 +2,7 @@
 //!
 //! Each neuron has two compartments, a soma (Hodgkin-Huxley Na⁺ and K⁺ channels) and a lumped
 //! passive dendrite, joined by an axial conductance. Unlike [`crate::neuron::Neuron`], the
-//! coupling to the tissue goes both ways: before each [`Population::step`] the caller writes
+//! coupling to the tissue goes both ways: before each `Population::step` (#54) the caller writes
 //! the extracellular Na⁺, K⁺ and X⁻ concentrations at every compartment, the reversal
 //! potentials follow them, and each compartment keeps its own intracellular Na⁺, K⁺ and Cl⁻,
 //! updated from its currents. This is what spreading depression needs: raised [K⁺]e
@@ -20,7 +20,7 @@
 //! steady state (each ion's net flux is zero), and `[Cl⁻]i` so that `E_Cl = V_rest`.
 //! [`PopulationParams::pump_scale`] then weakens or strengthens the pump from there.
 //!
-//! Time stepping: within one call to [`Population::step`] the concentrations, reversal
+//! Time stepping: within one call to `Population::step` (#54) the concentrations, reversal
 //! potentials and pump currents are frozen (they change on the scale of seconds). Each neuron
 //! then takes its own internal steps: backward Euler for the two potentials (a 2×2 solve
 //! with the conductances frozen at the start of the step) and Rush-Larsen for the gates. The

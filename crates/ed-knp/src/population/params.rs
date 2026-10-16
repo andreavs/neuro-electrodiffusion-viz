@@ -1,5 +1,9 @@
-//! Parameters of a [`Population`](super::Population) and the calibration that makes the
-//! baseline a steady state.
+//! Parameters of the reduced neuron population (the stepper lands with #54) and the
+//! calibration that makes the baseline a steady state.
+//!
+//! The calibration leaves the pump far from saturation at baseline (about 8 % of `P_max` in
+//! the soma), so it has a large reserve as [K⁺]e and [Na⁺]i rise. That reserve is what holds
+//! the tissue below the spreading-depression threshold; `pump_scale` explores it.
 
 use ed_core::constants::{psi_mv, T_DEFAULT};
 use ed_core::membrane::hh;
@@ -9,7 +13,7 @@ pub const PUMP_KM_K: f64 = 2.0;
 /// Half-saturation of the pump by intracellular Na⁺, mM (Kager et al. 2000).
 pub const PUMP_KM_NA: f64 = 7.7;
 
-/// Parameters shared by all neurons of a [`Population`].
+/// Parameters shared by all neurons of a population.
 #[derive(Debug, Clone, PartialEq)]
 pub struct PopulationParams {
     /// Membrane areas of the soma and the lumped dendrite, µm².
@@ -20,8 +24,9 @@ pub struct PopulationParams {
     pub g_axial: f64,
     /// Membrane capacitance, µF/cm².
     pub c_m: f64,
-    /// Somatic HH conductances ḡ_Na and ḡ_K, mS/cm².
+    /// Somatic HH Na⁺ conductance ḡ_Na, mS/cm².
     pub g_na_bar: f64,
+    /// Somatic HH K⁺ conductance ḡ_K, mS/cm².
     pub g_k_bar: f64,
     /// Persistent Na⁺ conductance (soma and dendrite), mS/cm².
     pub g_nap: f64,
@@ -39,16 +44,21 @@ pub struct PopulationParams {
     pub ecs: [f64; 3],
     /// Baseline intracellular Na⁺ and K⁺, mM.
     pub ics: [f64; 2],
-    /// Internal step bounds, ms, and the target change of V per internal step, mV.
+    /// Shortest internal step, ms.
     pub h_min: f64,
+    /// Longest internal step, ms.
     pub h_max: f64,
+    /// Target change of V per internal step, mV.
     pub v_tol: f64,
+    /// Temperature for the Nernst potentials, K.
     pub temperature: f64,
 }
 
 impl Default for PopulationParams {
-    /// A small cortical neuron: a 20 µm soma and a lumped dendrite with four times its
-    /// membrane, Publication 1 ECS baseline and Publication 2 intracellular values.
+    /// A small cortical neuron: a soma of about 20 µm (1500 µm² of membrane) and a lumped
+    /// dendrite with four times its membrane. ECS baseline from the KNP tissue paper
+    /// (Solbrå et al. 2018) and intracellular values from the KNP-EMI paper (Ellingsrud et
+    /// al. 2020).
     fn default() -> Self {
         Self {
             area: [1500.0, 6000.0],
@@ -117,6 +127,10 @@ impl PopulationParams {
         let pump = g_k * (v - e_k) / 2.0;
         let g_leak_na = -3.0 * pump / (v - e_na) - g_na;
         assert!(
+            e_k < v && v < e_na,
+            "V_rest must lie between E_K ({e_k:.1} mV) and E_Na ({e_na:.1} mV)"
+        );
+        assert!(
             pump > 0.0 && g_leak_na >= 0.0,
             "compartment {c}: K⁺ leak too small to balance the resting Na⁺ influx"
         );
@@ -152,11 +166,38 @@ mod tests {
                 g_k += p.g_k_bar * n.powi(4);
             }
             assert!(cal.g_leak_na > 0.0);
+            // Net membrane current is zero too, so V_rest is a fixed point.
+            let net = g_na * (v - e_na) + g_k * (v - e_k) + pump;
+            assert!(net.abs() < 1e-12, "net {net}");
             assert!((g_na * (v - e_na) + 3.0 * pump).abs() < 1e-12);
             assert!((g_k * (v - e_k) - 2.0 * pump).abs() < 1e-12);
             let e_cl = -psi * (p.ecs[2] / cal.cl_i).ln();
             assert!((e_cl - v).abs() < 1e-9);
         }
+    }
+
+    #[test]
+    fn default_reference_values() {
+        // By hand: [Cl⁻]i = 155.8 e^{−65/ψ}; dendrite pump = 0.05 (V − E_K) / 2 at 8 % load.
+        let p = PopulationParams::default();
+        let psi = psi_mv(p.temperature);
+        assert!((p.calibrate(0).cl_i - 155.8 * (-65.0 / psi).exp()).abs() < 1e-9);
+        let e_k = psi * (3.0f64 / 125.0).ln();
+        let pump = 0.05 * (-65.0 - e_k) / 2.0;
+        let load = (3.0 / 5.0f64).powi(2) * (12.0 / 19.7f64).powi(3);
+        assert!((p.calibrate(1).p_max - pump / load).abs() < 1e-9);
+        assert!(pump_fraction(10.0, 12.0) > pump_fraction(3.0, 12.0));
+        assert!(pump_fraction(3.0, 30.0) > pump_fraction(3.0, 12.0));
+    }
+
+    #[test]
+    #[should_panic(expected = "between E_K")]
+    fn rest_outside_the_reversal_potentials_is_rejected() {
+        PopulationParams {
+            v_rest: -100.0,
+            ..PopulationParams::default()
+        }
+        .calibrate(0);
     }
 
     #[test]

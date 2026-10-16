@@ -1,4 +1,4 @@
-//! Tabulated gating functions for the [`Population`](super::Population) internal steps.
+//! Tabulated gating functions for the population's internal steps.
 
 use super::params::p_inf;
 use ed_core::membrane::hh;
@@ -54,9 +54,11 @@ impl RateTable {
 
     #[inline]
     pub(super) fn at(&self, v: f64) -> [f64; COLUMNS] {
-        let u = ((v - TABLE_RANGE.0) / TABLE_DV).clamp(0.0, (self.rows.len() - 2) as f64);
-        // A NaN potential reads the first row rather than poisoning the gates.
-        let j = u as usize;
+        debug_assert!(!v.is_nan(), "NaN membrane potential");
+        let last = self.rows.len() - 1;
+        let u = ((v - TABLE_RANGE.0) / TABLE_DV).clamp(0.0, last as f64);
+        // In release builds a NaN potential reads the first row instead of panicking.
+        let j = (u as usize).min(last - 1);
         let w = (u - j as f64).max(0.0);
         let (a, b) = (&self.rows[j], &self.rows[j + 1]);
         std::array::from_fn(|c| a[c] + w * (b[c] - a[c]))
@@ -70,8 +72,8 @@ mod tests {
     #[test]
     fn table_matches_the_exact_rates() {
         let t = RateTable::new(-65.0);
-        let mut v = -120.0;
-        while v < 60.0 {
+        let mut v = -150.0;
+        while v < 100.0 {
             let r = t.at(v);
             let (m, h, n) = hh::rates_all(v, -65.0);
             for (col, x) in [
@@ -98,8 +100,9 @@ mod tests {
             );
             v += 0.137;
         }
-        // Clamped outside the range, and NaN does not panic.
+        // Clamped to the ends of the range.
         assert_eq!(t.at(-1e3), t.at(-150.0));
-        assert!(t.at(f64::NAN).iter().all(|x| x.is_finite()));
+        assert_eq!(t.at(1e3), t.at(100.0));
+        assert_eq!(t.at(100.0), t.rows[t.rows.len() - 1]);
     }
 }
