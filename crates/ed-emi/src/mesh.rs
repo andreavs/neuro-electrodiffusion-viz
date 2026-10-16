@@ -101,6 +101,10 @@ pub enum MeshError {
     CellsTouch(usize, usize),
     /// A tet has a vertex index out of range, a tag above the cell count, or no volume.
     BadTet(usize),
+    /// The number of tet tags differs from the number of tets.
+    TagCount,
+    /// A face of this tet on a membrane is shared by more than two tets.
+    NonConforming(usize),
 }
 
 impl fmt::Display for MeshError {
@@ -111,6 +115,8 @@ impl fmt::Display for MeshError {
             Self::EmptyCell(c) => write!(f, "cell {c} has no hexes"),
             Self::CellsTouch(a, b) => write!(f, "cells {a} and {b} touch"),
             Self::BadTet(t) => write!(f, "tet {t} is invalid or flat"),
+            Self::TagCount => write!(f, "need one tag per tet"),
+            Self::NonConforming(t) => write!(f, "a membrane face of tet {t} has over two tets"),
         }
     }
 }
@@ -313,7 +319,8 @@ impl Mesh {
     /// Builds the per-subdomain DOFs and the membrane of a conforming tetrahedral mesh.
     /// `tets` index into `points` (µm); `tet_tag` is 0 for the extracellular space and
     /// `1..=n_cells` for the cells. Membrane facets are the triangles shared by a cell tet
-    /// and an extracellular tet; cell faces on the outside of the mesh are sealed.
+    /// and an extracellular tet; cell faces on the outside of the mesh are sealed. The mesh
+    /// must be conforming; a hanging node on a membrane silently seals that part of it.
     pub fn from_tets(
         points: Vec<[f64; 3]>,
         tets: &[[u32; 4]],
@@ -323,7 +330,7 @@ impl Mesh {
         assert!(n_cells < u16::MAX as usize, "too many cells");
         let n_vertices = points.len();
         if tet_tag.len() != tets.len() {
-            return Err(MeshError::BadTet(tets.len().min(tet_tag.len())));
+            return Err(MeshError::TagCount);
         }
         // Reject out-of-range indices, bad tags and flat tets.
         let mut has_tet = vec![false; n_cells + 1];
@@ -399,21 +406,28 @@ impl Mesh {
         }
 
         // Membrane facets: triangles shared by a cell tet and an extracellular tet. The
-        // lumped P1 interface mass gives each corner a third of the area.
-        let mut faces: HashMap<[u32; 3], (usize, usize)> = HashMap::with_capacity(2 * tets.len());
+        // lumped P1 interface mass gives each corner a third of the area. Only faces whose
+        // corners all carry both DOFs can be on a membrane, which skips almost every face.
+        let dual = |v: u32| uses_outer[v as usize] && vertex_cell[v as usize] != 0;
+        let mut faces: HashMap<[u32; 3], (usize, usize, bool)> = HashMap::new();
         let mut facets = Vec::new();
         for (t, tet) in tets.iter().enumerate() {
             for skip in 0..4 {
                 let mut f = [0, 1, 2].map(|i| tet[i + usize::from(i >= skip)]);
+                if !f.iter().all(|&v| dual(v)) {
+                    continue;
+                }
                 f.sort_unstable();
-                match faces.remove(&f) {
+                match faces.get_mut(&f) {
                     None => {
-                        faces.insert(f, (t, skip));
+                        faces.insert(f, (t, skip, false));
                     }
-                    Some((u, uskip)) => {
-                        if (tet_tag[t] == 0) != (tet_tag[u] == 0) {
+                    Some((_, _, true)) => return Err(MeshError::NonConforming(t)),
+                    Some((u, uskip, paired)) => {
+                        *paired = true;
+                        if (tet_tag[t] == 0) != (tet_tag[*u] == 0) {
                             let (cell_tet, cell_skip) = if tet_tag[t] == 0 {
-                                (u, uskip)
+                                (*u, *uskip)
                             } else {
                                 (t, skip)
                             };

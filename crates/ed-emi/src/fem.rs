@@ -169,13 +169,29 @@ impl Stiffness {
     }
 }
 
-/// Aggregates for [`ed_core::linalg::TwoLevel`]: one per (x-plane, subdomain), numbered
-/// plane by plane. Needs a grid mesh.
+/// Aggregates for [`ed_core::linalg::TwoLevel`]: one per (x-slab, subdomain), numbered
+/// slab by slab. Grid meshes use one slab per x-plane of vertices; other meshes about one
+/// slab per 64 vertices.
 pub fn plane_aggregates(mesh: &Mesh) -> Vec<u32> {
-    let nx = mesh.grid.as_ref().expect("a grid mesh").axes[0].len();
+    let (nx, slab): (usize, Box<dyn Fn(usize) -> u32>) = match &mesh.grid {
+        Some(g) => {
+            let nx = g.axes[0].len();
+            (nx, Box::new(move |v| (v % nx) as u32))
+        }
+        None => {
+            let (lo, hi) = mesh.bounds();
+            let nx = (mesh.points.len() / 64).max(1);
+            let w = (hi[0] - lo[0]).max(f64::MIN_POSITIVE) / nx as f64;
+            let pts = &mesh.points;
+            (
+                nx,
+                Box::new(move |v| (((pts[v][0] - lo[0]) / w) as usize).min(nx - 1) as u32),
+            )
+        }
+    };
     let stride = mesh.n_cells as u32 + 1;
     let mut agg: Vec<u32> = (0..mesh.n_dofs())
-        .map(|d| (mesh.dof_vertex[d] % nx as u32) * stride + mesh.dof_tag[d] as u32)
+        .map(|d| slab(mesh.dof_vertex[d] as usize) * stride + mesh.dof_tag[d] as u32)
         .collect();
     // Renumber densely (a plane may not meet every cell), keeping the order.
     let mut map = vec![u32::MAX; nx * stride as usize];
