@@ -12,7 +12,7 @@ import { formatMfpt, histogramSteps, maxOf, mfptReadout } from './stats';
 import './view.css';
 
 const MAX_IONS = 100_000;
-/** Brightness of each glowing ion: dim enough that a dense cloud doesn't burn out to white. */
+/** Brightness of each glowing ion (the bloom threshold keeps a dense cloud from burning out). */
 const GLOW_BRIGHTNESS = 1;
 const NECK_COLOR = '#ff9f1c';
 const HEAD_COLOR = '#4cc9f0';
@@ -237,7 +237,6 @@ export function createParticlesView(): ScaleView {
         view.setBackground(glow ? 0x05060a : null);
         view.setBloom(glow ? { strength: 0.8, radius: 0.5, threshold: 0.5 } : null);
         cloud.setGlow(glow, GLOW_BRIGHTNESS);
-        q('.pv-stage').classList.toggle('pv-glow', glow);
       });
       view.start();
       try {

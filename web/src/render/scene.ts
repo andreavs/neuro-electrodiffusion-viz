@@ -35,7 +35,8 @@ export interface SceneHandle {
   frameBox(size: THREE.Vector3Like): void;
   /**
    * Turn bloom post-processing on (rendering into an HDR, multisampled buffer)
-   * or off (`null`, plain rendering straight to the canvas).
+   * or off (`null`, plain rendering straight to the canvas). Stays off on GPUs
+   * that cannot render to float buffers.
    */
   setBloom(opts: BloomOptions | null): void;
   /** Clear colour; `null` makes the canvas transparent. */
@@ -88,11 +89,18 @@ export function createScene(canvas: HTMLCanvasElement, opts: SceneOptions = {}):
     else renderer.render(scene, camera);
   };
 
+  let composerRatio = 0;
   const sizeComposer = () => {
     if (!composer) return;
-    composer.setPixelRatio(renderer.getPixelRatio());
+    // setPixelRatio reallocates every buffer itself; only call it when the ratio changes.
+    const ratio = renderer.getPixelRatio();
+    if (ratio !== composerRatio) composer.setPixelRatio(ratio);
+    composerRatio = ratio;
     composer.setSize(Math.max(1, canvas.clientWidth), Math.max(1, canvas.clientHeight));
   };
+  // Bloom renders into half-float targets; without float colour buffers it would draw nothing.
+  const hdrTargets =
+    renderer.extensions.has('EXT_color_buffer_float') || renderer.extensions.has('EXT_color_buffer_half_float');
 
   const resize = () => {
     const w = Math.max(1, canvas.clientWidth);
@@ -140,7 +148,7 @@ export function createScene(canvas: HTMLCanvasElement, opts: SceneOptions = {}):
       controls.update();
     },
     setBloom(opts) {
-      if (!opts) {
+      if (!opts || !hdrTargets) {
         composer?.passes.forEach((p) => p.dispose());
         composer?.dispose();
         composer = null;
@@ -151,6 +159,8 @@ export function createScene(canvas: HTMLCanvasElement, opts: SceneOptions = {}):
       if (!composer) {
         const target = new THREE.WebGLRenderTarget(1, 1, { type: THREE.HalfFloatType, samples: 4 });
         composer = new EffectComposer(renderer, target);
+        composer.renderTarget2.samples = 0; // only the scene pass needs multisampling
+        composerRatio = 0;
         composer.addPass(new RenderPass(scene, camera));
         bloom = new UnrealBloomPass(new THREE.Vector2(1, 1), 0.9, 0.5, 0.6);
         composer.addPass(bloom);

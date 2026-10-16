@@ -83,7 +83,7 @@ export class PointCloud implements Colormapped {
             float core = exp(-6.0 * r2);
             gl_FragColor = vec4(base * (0.35 * (1.0 - r2) + 1.6 * core) * uGlow, 1.0);
           } else {
-            gl_FragColor = vec4(base * (1.0 - 0.35 * r2), 1.0);
+            gl_FragColor = vec4(base * pow(1.0 - 0.35 * r2, 2.2), 1.0); // sRGB-space edge darkening
           }
           #include <colorspace_fragment>
         }`,

@@ -45,7 +45,8 @@ export class SurfaceField implements Colormapped {
         void main() {
           vec3 base = colormap(vValue);
           float facing = abs(dot(normalize(vNormal), normalize(vView)));
-          float shade = 0.45 + 0.55 * abs(normalize(vNormal).z);
+          // Shading in linear light: the ^2.2 keeps the classic look's sRGB-space contrast.
+          float shade = pow(0.45 + 0.55 * abs(normalize(vNormal).z), 2.2);
           // Glow: dimmer faces, a bright rim where the surface turns away, HDR so the rim blooms.
           float rim = pow(1.0 - facing, 2.5);
           vec3 glow = base * (0.35 + 0.65 * facing) + base * rim * 2.5 + vec3(0.6) * rim * rim;

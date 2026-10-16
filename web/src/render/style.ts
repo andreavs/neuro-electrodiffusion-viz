@@ -1,7 +1,7 @@
 /**
  * The app-wide 3-D rendering style: `classic` (flat colormapped slices and
- * surfaces, as in the thesis figures) or `glow` (dark stage, volume rendering,
- * emissive surfaces and bloom). Remembered per browser.
+ * surfaces, as in the thesis figures) or `glow` (dark stage, emissive
+ * surfaces and bloom). Remembered per browser.
  */
 export type RenderStyle = 'classic' | 'glow';
 
