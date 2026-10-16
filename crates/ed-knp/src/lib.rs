@@ -33,6 +33,10 @@
 //! and would break that discrete consistency.
 
 pub mod faces;
+mod sim;
+mod sources;
+
+pub use sim::KnpSim;
 
 use ed_core::constants::T_DEFAULT;
 use ed_core::ions::{IonSpecies, CA, CL, K, NA};
@@ -105,3 +109,6 @@ impl Default for Params {
         }
     }
 }
+
+#[cfg(test)]
+mod tests;

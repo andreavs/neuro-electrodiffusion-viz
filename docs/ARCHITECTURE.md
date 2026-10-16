@@ -58,8 +58,11 @@ Constants: R = 8.314 J/(K mol), F = 9.648·10⁴ C/mol, T = 300 K.
   multi-compartment Hodgkin-Huxley neuron runs in Rust alongside the KNP solver
   (one-way coupling, as in the paper).
 - Numerics (this repo): cell-centered finite volumes on a uniform 3-D grid (e.g. 64×64×32 over
-  ~1 mm), semi-implicit time stepping, potential solved with preconditioned CG warm-started from
-  the previous step. Sources are deposited into the grid cell containing each compartment centre.
+  ~1 mm), explicit (forward Euler) concentration updates with automatic substeps below the
+  diffusive stability limit (about 50 ms on the default grid), potential solved each step with
+  multigrid-preconditioned CG warm-started from the previous steps. Drift fluxes reuse the
+  potential operator's face conductances, so amounts and electroneutrality hold to round-off and
+  solver tolerance. Sources are deposited into the grid cell containing each compartment centre.
 
 ## Scale 2: KNP-EMI (Publication 2)
 
