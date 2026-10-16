@@ -27,3 +27,8 @@
   .pv-main, .pv-plots { grid-template-columns: 1fr; }
   .pv-stage, .pv-canvas { min-height: 320px; }
 }
+.pv-tour { padding: 12px 14px; background: var(--surface); border: 1px solid var(--border); border-radius: 12px; }
+.pv-tour-head { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px 16px; }
+.pv-tour-nav { display: flex; gap: 8px; }
+.pv-tour h3 { margin: 10px 0 4px; font-size: 1.05rem; }
+.pv-tour p { margin: 0; max-width: 90ch; line-height: 1.5; }

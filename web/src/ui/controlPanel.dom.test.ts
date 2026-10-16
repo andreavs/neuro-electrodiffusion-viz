@@ -61,6 +61,16 @@ describe('ControlPanel (DOM)', () => {
     expect(panel.params()).toEqual({ gsyn: 7.5, geom: 'b', field: false });
   });
 
+  it('setValues updates the controls and sends only the changed keys in one message', () => {
+    panel.setValues({ gsyn: 2, geom: 'b', field: true, stimulate: 1, unknown: 3 });
+    expect(sentAfterSetup()).toEqual([{ type: 'setParams', params: { gsyn: 2, geom: 'b' } }]);
+    expect(el<HTMLInputElement>('[data-key="gsyn"]').value).toBe('2');
+    expect(el<HTMLSelectElement>('[data-key="geom"]').value).toBe('b');
+    expect(el('[data-out="gsyn"]').textContent).toBe('2.0 mS');
+    panel.setValues({ gsyn: 2 });
+    expect(sentAfterSetup()).toHaveLength(1);
+  });
+
   it('routes speed to setBudget, not setParams', () => {
     const speed = el<HTMLInputElement>('[data-key="speed"]');
     speed.value = '0.5';
