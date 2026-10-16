@@ -1,10 +1,12 @@
 //! Bindings for `ed-knp`: a pyramidal cell releasing ions into a column of tissue
-//! (Publication 1).
+//! (Publication 1), either the simplified cell or the detailed Hay et al. cell.
 //!
 //! [`KnpSim`] owns an [`ed_knp::tissue::Tissue`]. Positions are in grid coordinates (µm,
 //! the box spans `[0, size]` on each axis); fields are flat, x fastest.
 
 use ed_core::Simulation;
+use ed_knp::cell::Cell;
+use ed_knp::hay::{HayMorphology, HayNeuron, HayParams};
 use ed_knp::neuron::{Morphology, Neuron, NeuronParams};
 use ed_knp::tissue::{Tissue, TissueConfig, CA, K, NA, X};
 use wasm_bindgen::prelude::*;
@@ -20,22 +22,38 @@ const PROBE_FIELDS: [&str; 5] = ["k", "na", "ca", "x", "phi"];
 
 #[wasm_bindgen]
 pub struct KnpSim {
-    tissue: Tissue,
+    tissue: Tissue<Box<dyn Cell>>,
 }
 
 #[wasm_bindgen]
 impl KnpSim {
-    /// The default column and cell; `seed` drives the synaptic input.
+    /// `cell` is "simple" (the default column and simplified cell) or "hay" (the Hay et
+    /// al. cell in a taller column); `seed` drives the synaptic input.
     #[wasm_bindgen(constructor)]
-    pub fn new(seed: u32) -> KnpSim {
-        let params = NeuronParams {
-            seed: u64::from(seed),
-            ..NeuronParams::default()
+    pub fn new(seed: u32, cell: &str) -> Result<KnpSim, JsError> {
+        let seed = u64::from(seed);
+        let (cfg, neuron): (_, Box<dyn Cell>) = match cell {
+            "simple" => {
+                let params = NeuronParams {
+                    seed,
+                    ..NeuronParams::default()
+                };
+                let n = Neuron::new(Morphology::pyramidal(), params);
+                (TissueConfig::default(), Box::new(n))
+            }
+            "hay" => {
+                let params = HayParams {
+                    seed,
+                    ..HayParams::default()
+                };
+                let n = HayNeuron::new(HayMorphology::cell1(), params);
+                (TissueConfig::hay(), Box::new(n))
+            }
+            _ => return Err(JsError::new(&format!("unknown cell {cell:?}"))),
         };
-        let neuron = Neuron::new(Morphology::pyramidal(), params);
-        Self {
-            tissue: Tissue::new(&TissueConfig::default(), neuron),
-        }
+        Ok(Self {
+            tissue: Tissue::new(&cfg, neuron),
+        })
     }
 
     /// Total excitatory synaptic rate over the dendrites, Hz.
@@ -45,7 +63,7 @@ impl KnpSim {
                 "synaptic rate must be within 0–{MAX_SYN_RATE_HZ} Hz"
             )));
         }
-        self.tissue.neuron.syn_rate_hz = hz;
+        self.tissue.neuron.set_syn_rate(hz);
         Ok(())
     }
     /// Current injected into the soma, nA (depolarising positive).
@@ -55,7 +73,7 @@ impl KnpSim {
                 "somatic current must be within ±{MAX_STIM_NA} nA"
             )));
         }
-        self.tissue.neuron.i_stim = i_na;
+        self.tissue.neuron.set_stim(i_na);
         Ok(())
     }
     /// KNP time step, ms (rounded to whole neuron steps of 0.025 ms).
@@ -161,8 +179,18 @@ mod tests {
     use super::*;
 
     #[test]
+    fn hay_cell_runs_in_its_column() {
+        let mut s = KnpSim::new(1, "hay").unwrap();
+        assert_eq!(s.shape(), vec![32, 32, 80]);
+        assert_eq!(s.compartments().len(), 7 * 642);
+        s.set_stim(2.0).unwrap();
+        s.step(20);
+        assert!(s.spikes() > 0.0);
+    }
+
+    #[test]
     fn fields_and_probes_have_the_grid_layout() {
-        let mut s = KnpSim::new(1);
+        let mut s = KnpSim::new(1, "simple").unwrap();
         s.set_syn_rate(10_000.0).unwrap();
         s.step(5);
         assert!((s.time_ms() - 5.0).abs() < 1e-9);

@@ -35,7 +35,30 @@ function setup(msPerStep: number) {
 describe('knp solver adapter', () => {
   it('applies the default parameters on creation', () => {
     const { sim } = setup(1);
-    expect(sim.calls).toEqual(['syn 8000', 'stim 0', 'dt 1']);
+    expect(sim.calls).toEqual(['syn 5000', 'stim 0', 'dt 1']);
+  });
+  it('switching the cell starts a new simulation with the current settings', () => {
+    const clock = { t: 0, msPerStep: 1 };
+    const sims: [string, FakeSim][] = [];
+    const create = (_seed: number, cell: string) => {
+      const s = new FakeSim(clock);
+      sims.push([cell, s]);
+      return s;
+    };
+    const solver = makeKnpSolver({}, create, () => clock.t);
+    solver.setParams({ stim: 0.5 });
+    solver.advance(3);
+    solver.setParams({ cell: 'simple' });
+    expect(sims.map(([c]) => c)).toEqual(['hay', 'simple']);
+    expect(sims[0]![1].freed).toBe(true);
+    expect(sims[1]![1].calls).toEqual(['syn 5000', 'stim 0.5', 'dt 1']);
+    expect(solver.frame().steps).toBe(0);
+    expect(() => solver.setParams({ cell: 'nope' })).toThrow();
+    solver.setParams({ cell: 'simple' });
+    expect(sims).toHaveLength(2);
+    expect(() => solver.setParams({ cell: 'hay', field: 'nope' })).toThrow();
+    expect(sims).toHaveLength(2);
+    expect(sims[1]![1].freed).toBe(false);
   });
   it('takes at least one step, and as many as fit the budget', () => {
     const slow = setup(20);
