@@ -210,6 +210,7 @@ export function createKnpView(): ScaleView {
 
       const layoutSlices = () => {
         if (!size) return;
+        colorbar?.resetAuto(); // a different plane: refit the colours to it
         const three = sliceMode.value === 'three';
         for (const a of AXES) {
           const visible = three || a === 'y';

@@ -18,7 +18,7 @@ import { ControlPanel } from '../../ui/controls';
 import { startRenderLoop } from '../../ui/renderLoop';
 import { getScale, type ScaleView } from '../registry';
 import { gather, membraneMesh, sliceAxisOf, sliceMesh, slicePlane, stimulatedCells, type QuadMesh } from './geometry';
-import { AXON_START, EMI_PARAMS } from './params';
+import { AXON_START, EMI_PARAMS, SLICE_FIELDS } from './params';
 import './view.css';
 
 /** Membrane potential colour range, mV: rest to the peak of an action potential. */
@@ -217,7 +217,9 @@ export function createEmiView(): ScaleView {
           inside = Boolean(params.inside);
           meshesStale = true;
         }
-        const fieldKey = String(params.field);
+        // Key the colour bar on the field this frame holds: frames sent before the worker saw a
+        // field change still carry the old one.
+        const fieldKey = SLICE_FIELDS[s.sliceField ?? -1] ?? String(params.field);
         if (fieldKey !== sliceField) {
           sliceField = fieldKey;
           const spec = FIELDS[fieldKey] ?? FIELDS.phi!;
