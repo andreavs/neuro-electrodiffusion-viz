@@ -22,6 +22,9 @@ ScaleView.mount(root, SimClient) ──────▶ init: load WASM
 - `web/src/sim/solver.ts`: `WorkerSolver` interface. Each scale implements it in
   `web/src/sim/solvers/<scale>.ts` by wrapping its wasm-bindgen struct from `crates/ed-wasm/src/<scale>.rs`.
 - `web/src/scales/<scale>/view.ts`: the scale's `ScaleView` (DOM, WebGL, controls).
+- `web/src/scales/<scale>/about.ts`: theory content (equations, assumptions, parameters, references).
+  Views show it with `createAboutPanel(id)` from `web/src/ui/about.ts`; the content and the
+  TeX→MathML renderer (Temml) load lazily on first hover/focus/open.
 - Rust: `crates/ed-core` (constants, ions, numerics, membrane models), one crate per scale,
   and `crates/ed-wasm` (the only crate that depends on `wasm-bindgen`). Solver crates stay
   plain Rust so they can be unit-tested and benchmarked natively.

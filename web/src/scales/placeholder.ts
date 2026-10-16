@@ -1,4 +1,5 @@
 import type { SimClient } from '../sim/client';
+import { createAboutPanel } from '../ui/about';
 import type { ScaleInfo, ScaleView } from './registry';
 
 /** Stand-in view until a scale's real visualization lands. */
@@ -6,11 +7,12 @@ export function placeholderView(info: ScaleInfo): ScaleView {
   return {
     async mount(root: HTMLElement, client: SimClient) {
       root.innerHTML = `
-        <section class="placeholder">
+        <section class="placeholder" data-placeholder>
           <h2>${info.title}</h2>
           <p>${info.summary}</p>
           <p class="muted" data-status>Loading solver…</p>
         </section>`;
+      root.firstElementChild!.append(createAboutPanel(info.id));
       const status = root.querySelector<HTMLElement>('[data-status]')!;
       try {
         const version = await client.ready();
