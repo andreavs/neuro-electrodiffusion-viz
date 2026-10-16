@@ -4,13 +4,18 @@ import {
   SlicePlane,
   SurfaceField,
   TimeSeriesPlot,
+  VolumeField,
   coolwarm,
   createScene,
   disposeObject,
+  icefire,
+  restRange,
   setColormap,
   setRange,
   viridis,
+  watchRenderStyle,
   type Axis,
+  type RenderStyle,
   type SceneHandle,
 } from '../../render';
 import type { SimClient } from '../../sim/client';
@@ -36,6 +41,11 @@ const AXES: readonly Axis[] = ['x', 'y', 'z'];
 const PROBE_COLORS = ['#ff9f1c', '#4cc9f0', '#f72585', '#80ed99'];
 /** Fraction of slice values inside the automatic colour range. */
 const CLIP_QUANTILE = 0.99;
+/** The glow colours centre on the median of every n-th field value (the resting value)... */
+const REST_STRIDE = 3;
+/** ...and span this fraction of the deviations from it, refreshed every few frames. */
+const REST_QUANTILE = 0.999;
+const REST_EVERY = 10;
 /** Membrane potential colour range, mV. */
 const V_RANGE = { min: -80, max: 40 };
 /** Starting probes relative to the soma (µm): at the soma, beside it, and up the apical trunk. */
@@ -49,6 +59,7 @@ export function createKnpView(): ScaleView {
   let scene: SceneHandle | null = null;
   let plots: TimeSeriesPlot[] = [];
   let disposed = false;
+  let stopStyle: (() => void) | null = null;
 
   return {
     async mount(root: HTMLElement, client: SimClient) {
@@ -130,6 +141,13 @@ export function createKnpView(): ScaleView {
       let builtComps = 0;
       let shape: Vec3 = [1, 1, 1];
       let slices: Partial<Record<Axis, SlicePlane>> = {};
+      let volume: VolumeField | null = null;
+      let box: THREE.LineSegments<THREE.EdgesGeometry, THREE.LineBasicMaterial> | null = null;
+      let style: RenderStyle = 'classic';
+      let restSample = new Float32Array(0);
+      let restFrames = 0;
+      /** 1 for the grid cells holding a compartment, which the glow range ignores. */
+      let sourceMask = new Uint8Array(0);
       let neuron: SurfaceField | null = null;
       let vertexComp: Uint16Array = new Uint16Array(0);
       let vertexValues = new Float32Array(0);
@@ -145,16 +163,23 @@ export function createKnpView(): ScaleView {
 
       const fieldInfo = (f: string) => KNP_FIELDS.find((x) => x.value === f) ?? KNP_FIELDS[0];
 
+      const glow = () => style === 'glow';
+      /** Glow shows changes from the resting value, of either sign, in a map that is black at rest. */
+      const colormapFor = (field: string) => (glow() ? icefire : field === 'phi' ? coolwarm : viridis);
+
       const rebuildColorbar = (field: string) => {
         colorbar?.dispose();
         const fi = fieldInfo(field);
-        colorbar = new Colorbar({
-          colormap: field === 'phi' ? coolwarm : viridis,
-          label: fi.label,
-          units: fi.units,
-        });
+        const cm = colormapFor(field);
+        // Glow centres concentrations on their resting value (below), not on zero.
+        colorbar = new Colorbar({ colormap: cm, label: fi.label, units: fi.units, symmetric: field === 'phi' });
         q('.kv-colorbar').append(colorbar.el);
-        for (const s of Object.values(slices)) setColormap(s, field === 'phi' ? coolwarm : viridis);
+        restFrames = 0; // a fresh bar holds no range yet: fit the glow range on the next paint
+        for (const s of Object.values(slices)) setColormap(s, cm);
+        if (volume) {
+          setColormap(volume, cm);
+          volume.setMode(cm.diverging ? 'diverging' : 'sequential');
+        }
       };
 
       const rebuildProbePlot = () => {
@@ -196,6 +221,22 @@ export function createKnpView(): ScaleView {
       /** Copies the visible layers of the last field into the slices and sets their range. */
       const paintSlices = () => {
         if (!lastField || !colorbar) return;
+        if (glow() && volume) {
+          volume.update(lastField);
+          let data: [number, number] | [] = [];
+          if (colorbar.isAuto && restFrames++ % REST_EVERY === 0) {
+            const n = Math.ceil(lastField.length / REST_STRIDE);
+            if (restSample.length !== n) restSample = new Float32Array(n);
+            for (let i = 0; i < n; i++) restSample[i] = lastField[i * REST_STRIDE]!;
+            // Median of the finite values (sort puts NaN last).
+            let finite = 0;
+            for (let i = 0; i < n; i++) if (Number.isFinite(restSample[i]!)) finite++;
+            const rest = shownField === 'phi' || finite === 0 ? 0 : restSample.sort()[finite >> 1]!;
+            data = restRange(lastField, sourceMask, rest, REST_QUANTILE, REST_STRIDE, restSample);
+          }
+          setRange(volume, colorbar.update(data));
+          return;
+        }
         const shown = Object.values(slices).filter((s) => s.mesh.visible);
         shown.forEach((s) => s.update(lastField!));
         // The cells holding a compartment are far off the rest; clip them so the halo shows.
@@ -213,14 +254,28 @@ export function createKnpView(): ScaleView {
       const layoutSlices = () => {
         if (!size) return;
         colorbar?.resetAuto(); // a different plane: refit the colours to it
+        restFrames = 0; // ...and recompute the glow range on the next paint
         const three = sliceMode.value === 'three';
         for (const a of AXES) {
-          const visible = three || a === 'y';
+          const visible = !glow() && (three || a === 'y');
           slices[a]!.mesh.visible = visible;
           sliders[a].parentElement!.hidden = !visible;
           slices[a]!.index = Number(sliders[a].value);
         }
         paintSlices(); // also while paused, when no frame will arrive
+      };
+
+      const applyStyle = (next: RenderStyle) => {
+        const changed = next !== style;
+        style = next;
+        view.setBackground(glow() ? 0x05060a : null);
+        view.setBloom(glow() ? { strength: 0.9, radius: 0.6, threshold: 0.45 } : null);
+        q<HTMLElement>('[data-view="slices"]').parentElement!.hidden = glow();
+        neuron?.setGlow(glow());
+        if (volume) volume.mesh.visible = glow();
+        if (box) box.material.opacity = glow() ? 0.25 : 1;
+        if (changed && shownField) rebuildColorbar(shownField);
+        if (size) layoutSlices();
       };
 
       const build = (frame: FrameMessage, f: Record<string, Float32Array>) => {
@@ -245,12 +300,29 @@ export function createKnpView(): ScaleView {
           view.scene.add(slices[a]!.mesh);
           built.push(slices[a]!.mesh);
         });
-        const box = new THREE.LineSegments(
+        box = new THREE.LineSegments(
           new THREE.EdgesGeometry(new THREE.BoxGeometry(extent.x, extent.y, extent.z)),
-          new THREE.LineBasicMaterial({ color: 0x8890a8 }),
+          new THREE.LineBasicMaterial({ color: 0x8890a8, transparent: true }),
         );
         view.scene.add(box);
         built.push(box);
+        volume = new VolumeField({
+          shape,
+          extent,
+          colormap: colormapFor(shownField),
+          smooth: view.floatLinear,
+          steps: view.software ? 48 : 160,
+        });
+        view.scene.add(volume.mesh);
+        built.push(volume.mesh);
+        sourceMask = new Uint8Array(shape[0] * shape[1] * shape[2]);
+        for (let c = 0; 7 * c + 6 < comps.length; c++) {
+          const cell = [0, 1, 2].map((a) =>
+            Math.floor(((comps[7 * c + a]! + comps[7 * c + 3 + a]!) / 2 / dims[a]!) * shape[a]!),
+          );
+          const [x, y, z] = [0, 1, 2].map((a) => Math.min(shape[a]! - 1, Math.max(0, cell[a]!)));
+          sourceMask[x! + shape[0] * (y! + shape[1] * z!)] = 1;
+        }
         const mesh = buildNeuron(comps, dims);
         vertexComp = mesh.vertexComp;
         vertexValues = new Float32Array(vertexComp.length);
@@ -261,7 +333,7 @@ export function createKnpView(): ScaleView {
         builtComps = comps.length;
         view.frameBox(extent);
         size = dims; // last, so a failed build is retried on the next frame
-        layoutSlices();
+        applyStyle(style);
         setProbes(DEFAULT_PROBES.map((p) => [0, 1, 2].map((a) => p[a]! + soma[a]!) as Vec3));
       };
 
@@ -274,6 +346,8 @@ export function createKnpView(): ScaleView {
         built = [];
         slices = {};
         neuron = null;
+        volume = null;
+        box = null;
         lastField = null; // sized for the old grid
         size = null;
       };
@@ -295,6 +369,7 @@ export function createKnpView(): ScaleView {
           somaPlot.clear();
           probePlot?.clear();
           colorbar?.resetAuto();
+          restFrames = 0;
         }
         lastTime = frame.timeMs;
 
@@ -333,8 +408,9 @@ export function createKnpView(): ScaleView {
           -((e.clientY - r.top) / r.height) * 2 + 1,
         );
         raycaster.setFromCamera(ndc, view.camera);
+        // In the glow style the slices are hidden; clicks still land on the (hidden) x–z slice.
         const targets = Object.values(slices)
-          .filter((s) => s.mesh.visible)
+          .filter((s) => (glow() ? s.axis === 'y' : s.mesh.visible))
           .map((s) => s.mesh);
         const hit = raycaster.intersectObjects(targets, false)[0];
         if (hit) setProbes([...probes, worldToGrid(hit.point.toArray(), size)]);
@@ -344,6 +420,7 @@ export function createKnpView(): ScaleView {
       for (const a of AXES) sliders[a].addEventListener('input', layoutSlices);
       showNeuron.addEventListener('change', () => neuron && (neuron.mesh.visible = showNeuron.checked));
 
+      stopStyle = watchRenderStyle(applyStyle);
       view.start();
       try {
         await client.ready();
@@ -359,6 +436,8 @@ export function createKnpView(): ScaleView {
     },
     unmount() {
       disposed = true;
+      stopStyle?.();
+      stopStyle = null;
       for (const p of plots) p.dispose();
       plots = [];
       scene?.dispose();
