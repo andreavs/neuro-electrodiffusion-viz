@@ -48,8 +48,11 @@ fn default_tolerance_does_not_accumulate_charge_error() {
     let mut s = KnpSolver::new(&small(Boundary::Dirichlet));
     add_k_source_na_sink(&mut s, 500.0);
     s.step(400);
+    // charge_tol bounds the RMS error per step, so no cell exceeds √N times it; an
+    // accumulating error would be hundreds of times larger after 400 steps.
+    let bound = KnpConfig::default().charge_tol * (s.grid().len() as f64).sqrt();
     let dq = charge(&s).iter().map(|q| q.abs()).fold(0.0, f64::max);
-    assert!(dq < 1e-6, "charge {dq:e} mM");
+    assert!(dq < bound, "charge {dq:e} mM");
 }
 
 #[test]
