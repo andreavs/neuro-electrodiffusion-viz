@@ -11,7 +11,7 @@ Work is tracked as GitHub issues. Each issue lists its dependencies and acceptan
 4. Before pushing, run locally:
    ```sh
    cargo fmt --all && cargo clippy --workspace --all-targets -- -D warnings && cargo test --workspace
-   cd web && npm run wasm && npm run typecheck && npm test && npm run build
+   cd web && npm run wasm && npm run typecheck && npm test && npm run build && npm run e2e
    ```
 5. Open a PR that says `Closes #<number>`, describe what a user would see, and get a review.
    CI must be green before merge. Merging to `main` deploys automatically.
