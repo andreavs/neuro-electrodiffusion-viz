@@ -241,3 +241,68 @@ fn passive_axon_matches_cable_theory() {
     let phi_m0 = vec![rest; s.mesh().membrane.len()];
     assert_within_capacitor_bound(&s, &before, &phi_m0);
 }
+
+/// A mesh without a grid (as from gmsh) runs: same membrane, a stable resting state.
+#[test]
+fn unstructured_mesh_runs() {
+    let grid = single_axon(EmiParams::default());
+    let m = grid.mesh();
+    let tets: Vec<[u32; 4]> = m
+        .tets
+        .iter()
+        .map(|t| t.map(|d| m.dof_vertex[d as usize]))
+        .collect();
+    let mesh = Mesh::from_tets(m.points.clone(), &tets, m.tet_tag.clone(), 1).unwrap();
+    let mut s = EmiSolver::new(mesh, EmiParams::default());
+    let rest = s.phi_m()[0];
+    for _ in 0..10 {
+        s.step().unwrap();
+    }
+    assert!(s.phi_m().iter().all(|v| (v - rest).abs() < 1.0));
+}
+
+/// The same axon as an unstructured mesh (no grid, so graph aggregates in the
+/// preconditioner and Cuthill-McKee DOF order) gives the same action potential.
+#[test]
+fn unstructured_mesh_matches_grid_mesh() {
+    let params = EmiParams {
+        dt: 0.05,
+        ..Default::default()
+    };
+    let mut grid = single_axon(params.clone());
+    let m = grid.mesh();
+    let tets: Vec<[u32; 4]> = m
+        .tets
+        .iter()
+        .map(|t| t.map(|d| m.dof_vertex[d as usize]))
+        .collect();
+    let mesh = Mesh::from_tets(m.points.clone(), &tets, m.tet_tag.clone(), 1).unwrap();
+    let mut free = EmiSolver::new(mesh, params);
+    assert_eq!(free.mesh().membrane.len(), grid.mesh().membrane.len());
+    for s in [&mut grid, &mut free] {
+        assert!(s.stimulate_where(1, |p| p[0] <= 25.0, 4.0, 0.0) > 0);
+    }
+    let mut peak: f64 = -100.0;
+    let its = |s: &EmiSolver| s.stats().potential.map_or(0, |c| c.iterations);
+    let (mut its_grid, mut its_free) = (0, 0);
+    while grid.t() < 3.0 {
+        grid.step().unwrap();
+        free.step().unwrap();
+        its_grid += its(&grid);
+        its_free += its(&free);
+        let diff = grid
+            .phi_m()
+            .iter()
+            .zip(free.phi_m())
+            .map(|(a, b)| (a - b).abs())
+            .fold(0.0, f64::max);
+        assert!(diff < 1.0, "t = {}: φ_M differs by {diff} mV", grid.t());
+        peak = peak.max(phi_m_at(&free, 1, 160.0));
+    }
+    assert!(peak > 0.0, "the action potential reached x = 160 µm");
+    // Graph aggregation copes with the 5 µm × 0.3 µm elements about as well as x-planes.
+    assert!(
+        its_free <= 2 * its_grid,
+        "{its_free} vs {its_grid} CG iterations"
+    );
+}

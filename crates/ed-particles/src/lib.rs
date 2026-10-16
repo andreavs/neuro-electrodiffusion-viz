@@ -16,11 +16,13 @@
 //! assert_eq!(sim.positions_xyz().len(), 3 * sim.n_alive());
 //! ```
 
+pub mod dendrite;
 pub mod field;
 pub mod geometry;
 pub mod rng;
 pub mod sim;
 
+pub use dendrite::{SpineOnDendrite, DENDRITE_HALF_LENGTH, DENDRITE_RADIUS};
 pub use field::{ElectricField, NeckField, NoField, UniformField};
 pub use geometry::{FreeSpace, Geometry, Junction, SegmentExit, SpineGeometry, Vec3};
 pub use rng::Xoshiro256pp;
