@@ -122,8 +122,9 @@ pub struct PatchState {
 impl PatchState {
     /// Initial state from Publication 2: φ_M⁰ = −67.74 mV, m₀ 0.0379,
     /// h₀ 0.688, n₀ 0.276. With the default parameters and concentrations this
-    /// is close to, but not exactly, an equilibrium: an isolated patch relaxes
-    /// towards [`rest_state`] (≈ −66.1 mV) within a few ms.
+    /// is close to, but not exactly, an equilibrium (net current ≈ −3.6 µA/cm²):
+    /// an isolated patch overshoots to ≈ −65.5 mV within 1 ms and settles at
+    /// [`rest_state`] (≈ −66.1 mV) after about 10 ms.
     pub const KNP_EMI: Self = Self {
         phi_m: -67.74,
         m: 0.0379,
@@ -195,6 +196,8 @@ pub fn rest_state(p: &MembraneParams, c: &IonConcentrations) -> Option<PatchStat
 /// Callers may write the concentration arrays between calls (e.g. from a KNP
 /// solver); Nernst potentials are recomputed at the start of every
 /// [`advance`](Self::advance) and [`compute_currents`](Self::compute_currents).
+/// The arrays are public for zero-copy access, but their lengths must not
+/// change after construction.
 #[derive(Debug, Clone)]
 pub struct MembranePatches {
     pub params: MembraneParams,
@@ -229,6 +232,9 @@ pub struct MembranePatches {
     pub i_cl: Vec<f64>,
     /// Total channel current I_ch = I_Na + I_K + I_Cl, µA/cm².
     pub i_ch: Vec<f64>,
+    /// Total channel conductance Σ g_k = ∂I_ch/∂φ_M, mS/cm², for
+    /// semi-implicit coupling.
+    pub g_ch: Vec<f64>,
 
     // Nernst potentials, refreshed from the concentrations on each call.
     e_na: Vec<f64>,
@@ -269,6 +275,7 @@ impl MembranePatches {
             i_k: vec![0.0; len],
             i_cl: vec![0.0; len],
             i_ch: vec![0.0; len],
+            g_ch: vec![0.0; len],
             e_na: vec![0.0; len],
             e_k: vec![0.0; len],
             e_cl: vec![0.0; len],
@@ -321,7 +328,14 @@ impl MembranePatches {
     fn refresh_nernst(&mut self) {
         let psi = psi_mv(self.params.temperature);
         for i in 0..self.len() {
-            let (e_na, e_k, e_cl) = nernst_all(&self.concentrations(i), psi);
+            let c = self.concentrations(i);
+            debug_assert!(
+                [c.na_i, c.na_e, c.k_i, c.k_e, c.cl_i, c.cl_e]
+                    .iter()
+                    .all(|&x| x > 0.0),
+                "non-positive concentration at patch {i}: {c:?}"
+            );
+            let (e_na, e_k, e_cl) = nernst_all(&c, psi);
             self.e_na[i] = e_na;
             self.e_k[i] = e_k;
             self.e_cl[i] = e_cl;
@@ -343,7 +357,7 @@ impl MembranePatches {
         (g_na, g_k, p.g_leak_cl)
     }
 
-    /// Fill the per-ion and total channel currents from the current state at
+    /// Fill the per-ion and total channel currents (and conductance) from the current state at
     /// time `t` (ms).
     pub fn compute_currents(&mut self, t: f64) {
         self.refresh_nernst();
@@ -361,6 +375,7 @@ impl MembranePatches {
             self.i_k[i] = i_k;
             self.i_cl[i] = i_cl;
             self.i_ch[i] = i_na + i_k + i_cl;
+            self.g_ch[i] = g_na + g_k + g_cl;
         }
     }
 
@@ -371,8 +386,9 @@ impl MembranePatches {
     /// Each substep updates φ_M exactly for frozen conductances (an
     /// exponential relaxation towards the conductance-weighted reversal
     /// potential) and then the gates with Rush-Larsen, so the scheme is
-    /// stable for any step size. On return the current arrays hold the
-    /// currents at `t + dt`.
+    /// stable for any step size. The synaptic conductance is sampled at the
+    /// start of each substep, so an onset inside a substep takes effect at the
+    /// next one. On return the current arrays hold the currents at `t + dt`.
     pub fn advance(&mut self, t: f64, dt: f64, substeps: usize, i_ext: Option<&[f64]>) {
         assert!(substeps > 0, "substeps must be positive");
         if let Some(ext) = i_ext {

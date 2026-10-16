@@ -89,7 +89,6 @@ fn synaptic_input_fires_action_potential_and_returns_to_rest() {
 #[test]
 fn current_pulse_fires_but_subthreshold_pulse_does_not() {
     let pulse = |amp: f64| move |t: f64| if (1.0..2.0).contains(&t) { amp } else { 0.0 };
-    // 1 ms pulses: threshold charge for this membrane is a few nC/cm².
     let mut p = hh_patch();
     let strong = run(&mut p, 30.0, 0.01, 1, pulse(20.0));
     assert!(
@@ -99,7 +98,8 @@ fn current_pulse_fires_but_subthreshold_pulse_does_not() {
     );
 
     let mut p = hh_patch();
-    let weak = run(&mut p, 30.0, 0.01, 1, pulse(2.0));
+    // Threshold for a 1 ms pulse is ≈ 15.7 µA/cm²; 12 is just below it.
+    let weak = run(&mut p, 30.0, 0.01, 1, pulse(12.0));
     assert!(peak(&weak) < -55.0, "subthreshold peak {}", peak(&weak));
 }
 
@@ -109,6 +109,20 @@ fn weak_synapse_does_not_fire() {
     p.set_synapse(0, 0.05, 1.0);
     let trace = run(&mut p, 30.0, 0.1, 25, |_| 0.0);
     assert!(peak(&trace) < -55.0, "peak {}", peak(&trace));
+}
+
+#[test]
+fn currents_at_rest_balance_with_correct_signs() {
+    let p = hh_patch();
+    assert!(p.i_ch[0].abs() < 1e-9, "I_ch = {}", p.i_ch[0]);
+    assert!(p.i_na[0] < 0.0, "Na⁺ leaks inward at rest");
+    assert!(p.i_k[0] > 0.0, "K⁺ leaks outward at rest");
+    // g_ch is the slope of I_ch with frozen gates.
+    let mut q = p.clone();
+    q.phi_m[0] += 1e-3;
+    q.compute_currents(0.0);
+    let slope = (q.i_ch[0] - p.i_ch[0]) / 1e-3;
+    assert!((slope - p.g_ch[0]).abs() < 1e-9, "{slope} vs {}", p.g_ch[0]);
 }
 
 #[test]
