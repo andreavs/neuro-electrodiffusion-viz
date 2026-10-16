@@ -41,7 +41,7 @@ export const about: AboutContent = {
     { symbol: String.raw`r_n`, description: 'Spine neck radius', value: '0.1 µm' },
     {
       symbol: String.raw`L_n`,
-      description: 'Neck length (sharp junction / with funnel of radius $r_h/2$)',
+      description: 'Neck length (sharp junction / with toroidal funnel of radius $r_h/2 - r_n$)',
       value: '1.0 / 0.89 µm',
     },
   ],

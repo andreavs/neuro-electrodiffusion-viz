@@ -85,12 +85,16 @@ export function createAboutPanel(
 ): HTMLDetailsElement {
   const details = document.createElement('details');
   details.className = 'about';
-  details.innerHTML = `<summary>About this model</summary><div class="about-body"></div>`;
+  details.innerHTML =
+    '<summary>About this model <span class="about-status" aria-live="polite"></span></summary>' +
+    '<div class="about-body"></div>';
   const summary = details.querySelector('summary')!;
   const body = details.querySelector<HTMLElement>('.about-body')!;
+  const status = summary.querySelector<HTMLElement>('.about-status')!;
 
   let state: 'idle' | 'loading' | 'ready' | 'error' = 'idle';
   let pending: Promise<void> | null = null;
+  let selfOpened = false; // the click handler opened it after loading; don't reload on toggle
   const ensure = (): Promise<void> =>
     (pending ??= ((state = 'loading'), load(id)).then(
       (html) => {
@@ -98,7 +102,10 @@ export function createAboutPanel(
         state = 'ready';
       },
       (err: unknown) => {
-        body.innerHTML = `<p class="muted">Could not load the model description (${String(err)}).</p>`;
+        const msg = document.createElement('p');
+        msg.className = 'muted';
+        msg.textContent = `Could not load the model description (${String(err)}).`;
+        body.replaceChildren(msg);
         state = 'error';
         pending = null; // retry on the next open
       },
@@ -115,14 +122,21 @@ export function createAboutPanel(
     if (details.open || state === 'ready') return;
     e.preventDefault();
     summary.setAttribute('aria-busy', 'true');
+    status.textContent = 'Loading…';
     void ensure().then(() => {
       summary.removeAttribute('aria-busy');
+      status.textContent = '';
+      selfOpened = true;
       details.open = true;
     });
   });
   // Opened some other way (e.g. programmatically) before anything was loaded: fill it in.
   details.addEventListener('toggle', () => {
-    if (details.open && state === 'idle') void ensure();
+    if (selfOpened) {
+      selfOpened = false;
+      return;
+    }
+    if (details.open && (state === 'idle' || state === 'error')) void ensure();
   });
   return details;
 }

@@ -13,11 +13,11 @@ export const about: AboutContent = {
     between them.`,
   equations: [
     {
-      tex: String.raw`\frac{\partial [k]_r}{\partial t} + \nabla\cdot\mathbf{J}_k^r = 0, \qquad \mathbf{J}_k^r = -D_k^r\nabla[k]_r - \frac{D_k^r z_k}{\psi}[k]_r\nabla\phi_r \qquad \text{in } \Omega_r,\ r\in\{i,e\}`,
+      tex: String.raw`\frac{\partial [k]_r}{\partial t} + \nabla\cdot\mathbf{J}_r^k = 0, \qquad \mathbf{J}_r^k = -D_r^k\nabla[k]_r - \frac{D_r^k z_k}{\psi}[k]_r\nabla\phi_r \qquad \text{in } \Omega_r,\ r\in\{i,e\}`,
       caption: 'Ion conservation with Nernst-Planck fluxes in each region.',
     },
     {
-      tex: String.raw`F\sum_k z_k\,\nabla\cdot\mathbf{J}_k^r = 0 \qquad \text{in } \Omega_r`,
+      tex: String.raw`F\sum_k z_k\,\nabla\cdot\mathbf{J}_r^k = 0 \qquad \text{in } \Omega_r`,
       caption: 'Bulk electroneutrality (KNP) determines the potentials $\\phi_i$ and $\\phi_e$.',
     },
     {
@@ -26,7 +26,7 @@ export const about: AboutContent = {
         'The membrane potential is the jump in potential across $\\Gamma$. The total membrane current $I_M$ is the channel current plus the capacitive current.',
     },
     {
-      tex: String.raw`-\mathbf{J}_k^i\cdot\mathbf{n}_i = \frac{I_{\mathrm{ch}}^k + \alpha_i^k (I_M - I_{\mathrm{ch}})}{F z_k}, \qquad \mathbf{J}_k^e\cdot\mathbf{n}_e = \frac{I_{\mathrm{ch}}^k + \alpha_e^k (I_M - I_{\mathrm{ch}})}{F z_k}`,
+      tex: String.raw`-\mathbf{J}_i^k\cdot\mathbf{n}_i = \frac{I_{\mathrm{ch}}^k + \alpha_i^k (I_M - I_{\mathrm{ch}})}{F z_k}, \qquad \mathbf{J}_e^k\cdot\mathbf{n}_e = \frac{I_{\mathrm{ch}}^k + \alpha_e^k (I_M - I_{\mathrm{ch}})}{F z_k}`,
       caption:
         'Ion-specific fluxes across the membrane: the channel current of ion $k$ plus its share of the capacitive current.',
     },
@@ -65,7 +65,7 @@ export const about: AboutContent = {
   ],
   references: [
     {
-      text: 'A. J. Ellingsrud*, A. Solbrå*, K. Pettersen, G. T. Einevoll, G. Halnes, M. R. Rognes. A mathematical framework for electrodiffusion based on explicit geometrical representation applied to ephaptic coupling in unmyelinated olfactory axon bundles. Publication 2 in A. V. Solbrå, <em>Modeling Electrical and Diffusive Transports in Neural Tissue</em>, PhD thesis, University of Oslo (2019).',
+      text: 'A. J. Ellingsrud*, A. Solbrå*, K. H. Pettersen, G. T. Einevoll, G. Halnes, M. E. Rognes. A mathematical framework for electrodiffusion based on explicit geometrical representation applied to ephaptic coupling in unmyelinated olfactory axon bundles. Publication 2 in A. V. Solbrå, <em>Modeling Electrical and Diffusive Transports in Neural Tissue</em>, PhD thesis, University of Oslo (2019).',
     },
   ],
 };
