@@ -67,11 +67,36 @@ impl CsrMatrix {
 
     /// Entry `(row, col)`, or 0 if it is not stored.
     pub fn get(&self, row: usize, col: usize) -> f64 {
+        self.position(row, col).map_or(0.0, |k| self.values[k])
+    }
+
+    /// Index into [`values`](Self::values) of entry `(row, col)`, if it is stored.
+    pub fn position(&self, row: usize, col: usize) -> Option<usize> {
         let range = self.row_ptr[row]..self.row_ptr[row + 1];
-        match self.col_idx[range.clone()].binary_search(&col) {
-            Ok(k) => self.values[range.start + k],
-            Err(_) => 0.0,
-        }
+        self.col_idx[range.clone()]
+            .binary_search(&col)
+            .ok()
+            .map(|k| range.start + k)
+    }
+
+    /// Row start offsets (length `n_rows + 1`).
+    pub fn row_ptr(&self) -> &[usize] {
+        &self.row_ptr
+    }
+
+    /// Column index of each stored entry.
+    pub fn col_idx(&self) -> &[usize] {
+        &self.col_idx
+    }
+
+    /// Stored values, in row-major order.
+    pub fn values(&self) -> &[f64] {
+        &self.values
+    }
+
+    /// Mutable stored values, for refilling a matrix with a fixed sparsity pattern.
+    pub fn values_mut(&mut self) -> &mut [f64] {
+        &mut self.values
     }
 
     /// Iterates over the stored `(col, value)` pairs of `row`.
@@ -161,6 +186,18 @@ mod tests {
         let mut d = [0.0; 3];
         a.diagonal(&mut d);
         assert_eq!(d, [4.0; 3]);
+    }
+
+    #[test]
+    fn values_can_be_refilled_in_place() {
+        let mut a = CsrMatrix::from_triplets(2, 2, &[(0, 0, 1.0), (1, 0, 2.0), (1, 1, 3.0)]);
+        assert_eq!(a.position(0, 1), None);
+        let k = a.position(1, 0).unwrap();
+        assert_eq!(a.col_idx()[k], 0);
+        assert_eq!(a.row_ptr(), &[0, 1, 3]);
+        a.values_mut()[k] = 5.0;
+        assert_eq!(a.get(1, 0), 5.0);
+        assert_eq!(a.values(), &[1.0, 5.0, 3.0]);
     }
 
     #[test]
