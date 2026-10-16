@@ -8,10 +8,10 @@ https://github.com/ModelDBRepository/139653). The output follows NEURON's
 Import3d and the L5PCtemplate.hoc rules: one section per unbranched piece,
 a child section starts at its parent's last 3-D point, roots attach to
 soma(0.5), nseg = 1 + 2 int(L/40), and the axon is replaced by two 30 µm,
-1 µm sections. Simplification: the soma contour becomes one cylinder with
-length = diameter = twice the mean contour radius (the area of a sphere).
+1 µm sections. The soma contour becomes 21 stations along its principal axis
+with the contour's width as diameter, as Import3d does, in one segment.
 
-Coordinates are µm with the soma centroid at the origin and the apical axis
+Coordinates are µm with soma(0.5) at the origin and the apical axis
 along +z (file (x, y, z) -> (x, -z, y)).
 """
 import math
@@ -120,10 +120,37 @@ def segments(pts, nseg):
         area = k = 0.0
         for u, v in zip(cuts, cuts[1:]):
             d0, d1 = at(u)[3], at(v)[3]
-            area += math.pi * 0.5 * (d0 + d1) * (v - u)
+            area += math.pi * 0.5 * (d0 + d1) * math.hypot(v - u, 0.5 * (d1 - d0))
             k += (v - u) / (d0 * d1)
         out.append((area, k, at(s0)[:3], at(0.5 * (s0 + s1))[:3], at(s1)[:3]))
     return total, out
+
+
+def soma_stations(contour, c, n=21):
+    """Import3d's soma: points along the contour's principal axis (in its plane) with
+    the contour width perpendicular to the axis as diameter."""
+    xs = [(p[0] - c[0], p[1] - c[1]) for p in contour]
+    sxx = sum(x * x for x, _ in xs)
+    syy = sum(y * y for _, y in xs)
+    sxy = sum(x * y for x, y in xs)
+    th = 0.5 * math.atan2(2 * sxy, sxx - syy)
+    a, b = (math.cos(th), math.sin(th)), (-math.sin(th), math.cos(th))
+    t = [x * a[0] + y * a[1] for x, y in xs]
+    u = [x * b[0] + y * b[1] for x, y in xs]
+    t0, t1 = min(t), max(t)
+    out = []
+    for i in range(n):
+        # Stations at bin centres, so the end diameters are not zero.
+        ti = t0 + (i + 0.5) * (t1 - t0) / n
+        cuts = []
+        for j in range(len(t)):
+            k = (j + 1) % len(t)
+            if (t[j] - ti) * (t[k] - ti) <= 0 and t[j] != t[k]:
+                f = (ti - t[j]) / (t[k] - t[j])
+                cuts.append(u[j] + f * (u[k] - u[j]))
+        uc = 0.5 * (max(cuts) + min(cuts))
+        out.append([c[0] + ti * a[0] + uc * b[0], c[1] + ti * a[1] + uc * b[1], c[2], max(cuts) - min(cuts)])
+    return out
 
 
 def main(path):
@@ -137,7 +164,9 @@ def main(path):
             if kind in words:
                 roots.append((region, branch(alt)))
     c = [sum(p[k] for p in soma) / len(soma) for k in range(3)]
-    r = sum(math.dist(p[:3], c) for p in soma) / len(soma)
+    stations = soma_stations(soma, c)
+    c = stations[len(stations) // 2][:3]  # soma(0.5) at the origin
+    r = 0.5 * max(p[3] for p in stations)  # axon starts at the soma's lower edge
 
     # region parent nseg, then per segment: start xyz, centre xyz, end xyz,
     # area, ∫ds/d², path distance from soma(0.5) to the centre.
@@ -145,18 +174,21 @@ def main(path):
 
     def emit(region, parent, rows):
         flat = [x for row in rows for x in row]
-        body = " ".join(f"{x:.5g}" for x in flat)
+        body = " ".join(f"{x:.6g}" for x in flat)
         lines.append(f"{region} {parent} {len(rows)} {body}")
         return len(lines) - 1
 
-    emit("soma", -1, [[0, 0, -r, 0, 0, 0, 0, 0, r, 4 * math.pi * r * r, 1 / (2 * r), 0]])
+    stations = [transform(p, c) for p in stations]
+    _, ((a, k, s0, m, s1),) = segments(stations, 1)
+    emit("soma", -1, [[*s0, *m, *s1, a, k, 0]])
     max_apical = 0.0
 
     def walk(region, pts, children, parent, parent_end, d0):
         nonlocal max_apical
         pts = [transform(p, c) for p in pts]
         if parent_end is not None:
-            pts = [parent_end] + pts
+            # Import3d: the parent's last point, with the child's own first diameter.
+            pts = [parent_end[:3] + [pts[0][3]]] + pts
         total, segs = segments(pts, 0)  # length only
         nseg = 1 + 2 * int(total / SEG_LEN)
         total, segs = segments(pts, nseg)
