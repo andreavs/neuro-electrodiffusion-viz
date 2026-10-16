@@ -56,8 +56,8 @@ impl ElectricField for UniformField {
     }
 }
 
-/// A potential drop concentrated in the neck: uniform axial field for z below `z_top`,
-/// zero in the head.
+/// A potential drop concentrated in the neck: uniform axial field for 0 ≤ z < `z_top`,
+/// zero in the head and below the neck base (in a parent dendrite).
 #[derive(Debug, Clone, Copy)]
 pub struct NeckField {
     /// Field magnitude in mV/µm; positive points out of the spine.
@@ -79,7 +79,7 @@ impl NeckField {
 
 impl ElectricField for NeckField {
     fn field(&self, p: Vec3) -> Vec3 {
-        if p[2] < self.z_top {
+        if p[2] < self.z_top && p[2] >= 0.0 {
             [0.0, 0.0, -self.e_out]
         } else {
             [0.0; 3]
@@ -104,6 +104,8 @@ mod tests {
         assert!((dv - 10.0).abs() < 0.05, "ΔV = {dv}");
         assert_eq!(f.field(g.head_centre()), [0.0; 3]);
         assert!(f.uniform().is_none());
+        // Nothing below the neck base, where a parent dendrite may continue.
+        assert_eq!(f.field([0.0, 0.0, -0.01]), [0.0; 3]);
     }
 
     #[test]
