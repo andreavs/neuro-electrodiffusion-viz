@@ -1,8 +1,8 @@
 //! Convergence and solver tests for `ed_core::linalg` on manufactured solutions.
 
 use ed_core::linalg::{
-    BoundaryConditions, CgOptions, DiffusionOperator, Grid, Jacobi, LinearOperator, Multigrid,
-    NullSpace, Pcg, Preconditioner,
+    Boundary, BoundaryConditions, CgOptions, DiffusionOperator, Grid, Jacobi, LinearOperator,
+    Multigrid, NullSpace, Pcg, Preconditioner,
 };
 use std::f64::consts::PI;
 
@@ -54,6 +54,21 @@ const NEUMANN_3D: Manufactured = Manufactured {
         let u = cx * cy * cz;
         let ux = -PI * (PI * p[0]).sin() * cy * cz;
         -((1.0 + 0.5 * p[0]) * (-3.0 * PI * PI * u) + 0.5 * ux)
+    },
+};
+
+// 2-D, Neumann: u = cos(πx) cos(2πy) on [0, 1]², σ = 2 + sin(x) cos(y) has
+// -∇·(σ∇u) = 5π² σ u − σ_x u_x − σ_y u_y.
+const NEUMANN_2D: Manufactured = Manufactured {
+    u: |p| (PI * p[0]).cos() * (2.0 * PI * p[1]).cos(),
+    sigma: |p| 2.0 + p[0].sin() * p[1].cos(),
+    f: |p| {
+        let (x, y) = (p[0], p[1]);
+        let u = (PI * x).cos() * (2.0 * PI * y).cos();
+        let ux = -PI * (PI * x).sin() * (2.0 * PI * y).cos();
+        let uy = -2.0 * PI * (PI * x).cos() * (2.0 * PI * y).sin();
+        let s = 2.0 + x.sin() * y.cos();
+        5.0 * PI * PI * s * u - x.cos() * y.cos() * ux + x.sin() * y.sin() * uy
     },
 };
 
@@ -165,6 +180,199 @@ fn neumann_solution_has_zero_mean_and_correct_gradients() {
     }
     assert_second_order(&errors);
     assert_second_order(&grad_errors);
+}
+
+#[test]
+fn mixed_boundaries_converge_at_second_order() {
+    // Neumann in x would need ∂u/∂x = 0 there; instead use Dirichlet on x and z and
+    // Neumann on y with u = sin(2x + 1) cos(πy) e^{z}, whose y-derivative vanishes at y = 0, 1.
+    let m = Manufactured {
+        u: |p| (2.0 * p[0] + 1.0).sin() * (PI * p[1]).cos() * p[2].exp(),
+        sigma: |p| 1.0 + 0.5 * p[0],
+        f: |p| {
+            let u = (2.0 * p[0] + 1.0).sin() * (PI * p[1]).cos() * p[2].exp();
+            let ux = 2.0 * (2.0 * p[0] + 1.0).cos() * (PI * p[1]).cos() * p[2].exp();
+            -((1.0 + 0.5 * p[0]) * (-4.0 - PI * PI + 1.0) * u + 0.5 * ux)
+        },
+    };
+    let bc = BoundaryConditions {
+        lower: [Boundary::Dirichlet, Boundary::Neumann, Boundary::Dirichlet],
+        upper: [Boundary::Dirichlet, Boundary::Neumann, Boundary::Dirichlet],
+    };
+    let errors: Vec<f64> = [16, 32, 64]
+        .iter()
+        .map(|&n| {
+            let h = 1.0 / n as f64;
+            let (op, b, exact) = setup(Grid::new_3d([n; 3], [h; 3]), bc, &m);
+            max_err(&solve_mg(&op, &b, NullSpace::None), &exact)
+        })
+        .collect();
+    assert_second_order(&errors);
+}
+
+#[test]
+fn neumann_2d_converges_at_second_order() {
+    let errors: Vec<f64> = [16, 32, 64, 128]
+        .iter()
+        .map(|&n| {
+            let h = 1.0 / n as f64;
+            let (op, b, exact) = setup(
+                Grid::new_2d(n, n, h, h),
+                BoundaryConditions::neumann(),
+                &NEUMANN_2D,
+            );
+            let x = solve_mg(&op, &b, NullSpace::Constant);
+            assert!(x.iter().sum::<f64>().abs() < 1e-9);
+            max_err(&x, &exact)
+        })
+        .collect();
+    assert_second_order(&errors);
+}
+
+#[test]
+fn shifted_operator_solves_implicit_step() {
+    // (s − ∇·σ∇) u = f with s = 1/Δt on a Neumann box is nonsingular.
+    let n = 32;
+    let h = 1.0 / n as f64;
+    let shift = 50.0;
+    let (mut op, mut b, exact) = setup(
+        Grid::new_3d([n; 3], [h; 3]),
+        BoundaryConditions::neumann(),
+        &NEUMANN_3D,
+    );
+    op.set_shift(&vec![shift; op.len()]);
+    b.iter_mut().zip(&exact).for_each(|(b, u)| *b += shift * u);
+    let x = solve_mg(&op, &b, NullSpace::None);
+    assert!(max_err(&x, &exact) < 5e-3, "error {}", max_err(&x, &exact));
+    // Same answer through the assembled matrix and Jacobi.
+    let a = op.to_csr();
+    let mut xj = vec![0.0; op.len()];
+    let opts = CgOptions {
+        rtol: 1e-11,
+        ..Default::default()
+    };
+    let stats = Pcg::new(op.len()).solve(&a, &mut Jacobi::new(&a), &b, &mut xj, &opts);
+    assert!(stats.converged);
+    assert!(max_err(&x, &xj) < 1e-8);
+}
+
+#[test]
+fn pcg_on_grid_operator_matches_direct_solve() {
+    let grid = Grid::new_3d([5, 4, 3], [0.4, 0.5, 0.3]);
+    let bc = BoundaryConditions {
+        lower: [Boundary::Dirichlet, Boundary::Neumann, Boundary::Neumann],
+        upper: [Boundary::Neumann, Boundary::Neumann, Boundary::Dirichlet],
+    };
+    let sigma: Vec<f64> = (0..grid.len())
+        .map(|c| 1.0 + 0.7 * (c as f64).sin())
+        .collect();
+    let op = DiffusionOperator::new(grid, bc, &sigma);
+    let a = op.to_csr();
+    let n = op.len();
+    let mut dense = vec![vec![0.0; n]; n];
+    for (r, row) in dense.iter_mut().enumerate() {
+        for (c, v) in a.row(r) {
+            row[c] = v;
+        }
+    }
+    let b: Vec<f64> = (0..n).map(|i| (0.3 * i as f64).cos()).collect();
+    let exact = gauss_solve(dense, b.clone());
+    let opts = CgOptions {
+        rtol: 1e-13,
+        ..Default::default()
+    };
+    let mut x = vec![0.0; n];
+    assert!(
+        Pcg::new(n)
+            .solve(&op, &mut Multigrid::new(&op), &b, &mut x, &opts)
+            .converged
+    );
+    assert!(max_err(&x, &exact) < 1e-9);
+}
+
+fn gauss_solve(mut m: Vec<Vec<f64>>, mut x: Vec<f64>) -> Vec<f64> {
+    let n = x.len();
+    for col in 0..n {
+        let piv = (col..n)
+            .max_by(|&i, &j| m[i][col].abs().total_cmp(&m[j][col].abs()))
+            .unwrap();
+        m.swap(col, piv);
+        x.swap(col, piv);
+        let (top, rest) = m.split_at_mut(col + 1);
+        for (r, row) in rest.iter_mut().enumerate() {
+            let f = row[col] / top[col][col];
+            for (v, p) in row[col..].iter_mut().zip(&top[col][col..]) {
+                *v -= f * p;
+            }
+            x[col + 1 + r] -= f * x[col];
+        }
+    }
+    for row in (0..n).rev() {
+        let s: f64 = (row + 1..n).map(|k| m[row][k] * x[k]).sum();
+        x[row] = (x[row] - s) / m[row][row];
+    }
+    x
+}
+
+#[test]
+fn multigrid_handles_grids_that_do_not_coarsen_fully() {
+    for grid in [
+        Grid::new_3d([63, 30, 7], [1.0; 3]),
+        Grid::new_3d([1, 32, 32], [1.0; 3]),
+        Grid::new_2d(128, 1, 1.0, 1.0),
+        Grid::new_3d([1, 1, 1], [1.0; 3]),
+    ] {
+        for (bc, ns) in [
+            (BoundaryConditions::dirichlet(), NullSpace::None),
+            (BoundaryConditions::neumann(), NullSpace::Constant),
+        ] {
+            let op = DiffusionOperator::uniform(grid, bc, 1.0);
+            let b: Vec<f64> = (0..op.len()).map(|i| (0.37 * i as f64).sin()).collect();
+            let mut x = vec![0.0; op.len()];
+            let opts = CgOptions {
+                rtol: 1e-8,
+                null_space: ns,
+                ..Default::default()
+            };
+            let stats = Pcg::new(op.len()).solve(&op, &mut Multigrid::new(&op), &b, &mut x, &opts);
+            assert!(stats.converged, "{:?} {bc:?}: {stats:?}", grid.n);
+        }
+    }
+}
+
+/// Regression guard for multigrid quality on the KNP grid: iteration counts, not time.
+#[test]
+fn multigrid_iterations_on_knp_grid() {
+    let grid = Grid::new_3d([64, 64, 32], [15.0; 3]);
+    let sigma: Vec<f64> = (0..grid.len())
+        .map(|c| 1.0 + 0.1 * (c as f64 * 1e-3).sin())
+        .collect();
+    let mut b: Vec<f64> = (0..grid.len())
+        .map(|c| ((c * 7919) % 1000) as f64 / 1000.0)
+        .collect();
+    ed_core::linalg::remove_mean(&mut b);
+    let op = DiffusionOperator::new(grid, BoundaryConditions::neumann(), &sigma);
+    let mut mg = Multigrid::new(&op);
+    assert_eq!(mg.coarsest_len(), 32);
+    let mut cg = Pcg::new(op.len());
+    let opts = CgOptions {
+        rtol: 1e-6,
+        null_space: NullSpace::Constant,
+        ..Default::default()
+    };
+    let mut x = vec![0.0; op.len()];
+    let cold = cg.solve(&op, &mut mg, &b, &mut x, &opts);
+    assert!(cold.converged && cold.iterations <= 8, "{cold:?}");
+    // Warm start after a small change needs fewer iterations.
+    b.iter_mut()
+        .enumerate()
+        .for_each(|(c, v)| *v *= 1.0 + 1e-3 * ((c % 5) as f64 - 2.0));
+    ed_core::linalg::remove_mean(&mut b);
+    let warm = cg.solve(&op, &mut mg, &b, &mut x, &opts);
+    assert!(
+        warm.converged && warm.iterations < cold.iterations,
+        "{warm:?} vs {cold:?}"
+    );
 }
 
 #[test]

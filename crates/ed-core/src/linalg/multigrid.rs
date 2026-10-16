@@ -1,4 +1,4 @@
-use super::{DiffusionOperator, Grid, Preconditioner};
+use super::{DiffusionOperator, Grid, LinearOperator, Preconditioner};
 
 /// Geometric multigrid V-cycle preconditioner for [`DiffusionOperator`].
 ///
@@ -9,6 +9,16 @@ use super::{DiffusionOperator, Grid, Preconditioner};
 /// smoother is red-black Gauss-Seidel, red-then-black before and black-then-red after the
 /// coarse correction, and the coarsest level uses symmetric sweep pairs, so one V-cycle
 /// is a symmetric operator and can precondition CG.
+///
+/// The preconditioner keeps its own copy of the operator: call [`update`](Self::update)
+/// after every [`DiffusionOperator::update_sigma`] or [`DiffusionOperator::set_shift`],
+/// or CG keeps working but converges more slowly.
+///
+/// Coarsening needs even cell counts, so grids of size `k·2^m` with small `k` (such as
+/// 64×64×32) work best. An axis with an odd count stops being coarsened, and the hierarchy
+/// ends early with a larger coarsest level; CG still converges, with 2–6× more iterations.
+/// Strongly anisotropic cells (`h` differing per axis) also cost extra iterations.
+/// [`coarsest_len`](Self::coarsest_len) shows where the hierarchy ended.
 #[derive(Clone, Debug)]
 pub struct Multigrid {
     ops: Vec<DiffusionOperator>,
@@ -51,15 +61,12 @@ impl Multigrid {
                 *n /= fa;
                 *h *= fa as f64;
             }
-            let mut sigma = vec![0.0; cg.len()];
-            restrict(
-                &g,
-                &cg,
-                f,
-                &ops.last().expect("fine level").sigma,
-                &mut sigma,
-            );
-            let op = DiffusionOperator::new(cg, *fine.boundary_conditions(), &sigma);
+            let parent = ops.last().expect("fine level");
+            let (mut sigma, mut shift) = (vec![0.0; cg.len()], vec![0.0; cg.len()]);
+            restrict(&g, &cg, f, &parent.sigma, &mut sigma);
+            restrict(&g, &cg, f, &parent.shift, &mut shift);
+            let mut op = DiffusionOperator::new(cg, *fine.boundary_conditions(), &sigma);
+            op.set_shift(&shift);
             ops.push(op);
             factors.push(f);
         }
@@ -82,6 +89,11 @@ impl Multigrid {
         self.ops.len()
     }
 
+    /// Number of cells on the coarsest level.
+    pub fn coarsest_len(&self) -> usize {
+        self.ops.last().expect("at least one level").len()
+    }
+
     /// Re-derives all levels after the fine operator's coefficients changed. Does not
     /// allocate. `fine` must have the same grid and boundary kinds as at construction.
     pub fn update(&mut self, fine: &DiffusionOperator) {
@@ -91,6 +103,7 @@ impl Multigrid {
             self.ops[0].boundary_conditions()
         );
         self.ops[0].sigma.copy_from_slice(&fine.sigma);
+        self.ops[0].shift.copy_from_slice(&fine.shift);
         self.ops[0].recompute();
         for l in 0..self.factors.len() {
             let (head, tail) = self.ops.split_at_mut(l + 1);
@@ -102,6 +115,13 @@ impl Multigrid {
                 self.factors[l],
                 &f_op.sigma,
                 &mut c_op.sigma,
+            );
+            restrict(
+                f_op.grid(),
+                &cg,
+                self.factors[l],
+                &f_op.shift,
+                &mut c_op.shift,
             );
             c_op.recompute();
         }

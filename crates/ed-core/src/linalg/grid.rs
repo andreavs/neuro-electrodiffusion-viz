@@ -133,25 +133,35 @@ impl BoundaryConditions {
         }
     }
 
-    /// True when every active face of `grid` is Neumann, so the operator is singular
-    /// with the constants as its null space.
+    /// True when every active face of `grid` is Neumann, so the operator (without a
+    /// shift) is singular with the constants as its null space.
     pub fn is_pure_neumann(&self, grid: &Grid) -> bool {
         (0..grid.dim)
             .all(|a| self.lower[a] == Boundary::Neumann && self.upper[a] == Boundary::Neumann)
     }
 }
 
-/// Cell-centred finite-volume discretisation of `A u = -∇·(σ∇u)` on a [`Grid`].
+/// Cell-centred finite-volume discretisation of `A u = s u - ∇·(σ∇u)` on a [`Grid`].
 ///
 /// `σ` is given per cell; face coefficients use the harmonic mean of the two neighbouring
-/// cells. Rows are scaled by the cell volume, so `A u` approximates `-∇·(σ∇u)` pointwise.
-/// Dirichlet faces use a ghost value at distance `h/2`. The operator is symmetric and,
-/// unless every face is Neumann, positive definite.
+/// cells. The optional per-cell shift `s ≥ 0` (default 0, see [`set_shift`](Self::set_shift))
+/// covers implicit time steps such as `(1/Δt − ∇·D∇) c = c_old/Δt`.
+///
+/// Each row is the flux balance of a cell divided by its volume, so `A u` approximates
+/// `-∇·(σ∇u)` pointwise. A point source of total strength `I` deposited in one cell
+/// therefore enters the right-hand side as `I / (hx·hy·hz)` (`I / (hx·hy)` in 2-D).
+///
+/// Dirichlet faces use a ghost value at distance `h/2`. The operator is symmetric and
+/// positive definite unless every face is Neumann and the shift is zero; then the
+/// constants are its null space, provided the region with `σ > 0` is connected.
+/// Cells with `σ = 0` and no shift are uncoupled zero rows: keep the right-hand side zero
+/// there (their solution value is left at 0 by the multigrid smoother).
 #[derive(Clone, Debug)]
 pub struct DiffusionOperator {
     grid: Grid,
     bc: BoundaryConditions,
     pub(super) sigma: Vec<f64>,
+    pub(super) shift: Vec<f64>,
     /// `c[a][cell]` couples `cell` to its upper neighbour along axis `a` (0 on the last layer).
     c: [Vec<f64>; 3],
     diag: Vec<f64>,
@@ -169,11 +179,16 @@ impl DiffusionOperator {
             grid.len(),
             "sigma must have one value per cell"
         );
+        assert!(
+            (grid.dim == 2 && grid.n[2] == 1) || grid.dim == 3,
+            "grid must be built with Grid::new_2d or Grid::new_3d"
+        );
         let n = grid.len();
         let mut op = Self {
             grid,
             bc,
             sigma: sigma.to_vec(),
+            shift: vec![0.0; n],
             c: [vec![0.0; n], vec![0.0; n], vec![0.0; n]],
             diag: vec![0.0; n],
             inv_diag: vec![0.0; n],
@@ -200,19 +215,32 @@ impl DiffusionOperator {
         &self.sigma
     }
 
-    /// Replaces the coefficients without reallocating.
+    pub fn shift(&self) -> &[f64] {
+        &self.shift
+    }
+
+    /// Sets the per-cell diagonal shift `s` (≥ 0) without reallocating. Call
+    /// [`Multigrid::update`](super::Multigrid::update) afterwards if one is in use.
+    pub fn set_shift(&mut self, shift: &[f64]) {
+        assert_eq!(shift.len(), self.shift.len());
+        self.shift.copy_from_slice(shift);
+        self.recompute();
+    }
+
+    /// Replaces the coefficients without reallocating. Call
+    /// [`Multigrid::update`](super::Multigrid::update) afterwards if one is in use.
     pub fn update_sigma(&mut self, sigma: &[f64]) {
         assert_eq!(sigma.len(), self.sigma.len());
         self.sigma.copy_from_slice(sigma);
         self.recompute();
     }
 
-    /// Rebuilds face coefficients and the diagonal from `self.sigma`.
+    /// Rebuilds face coefficients and the diagonal from `self.sigma` and `self.shift`.
     pub(super) fn recompute(&mut self) {
         let g = self.grid;
         let stride = [1, g.n[0], g.n[0] * g.n[1]];
         let sigma = &self.sigma;
-        self.diag.fill(0.0);
+        self.diag.copy_from_slice(&self.shift);
         for a in 0..3 {
             self.c[a].fill(0.0);
             if a >= g.dim {

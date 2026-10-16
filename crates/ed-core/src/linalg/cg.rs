@@ -6,7 +6,9 @@ pub enum NullSpace {
     /// The matrix is nonsingular.
     None,
     /// The constants span the null space (pure-Neumann diffusion problems). The right-hand
-    /// side is projected onto zero mean and the returned solution has zero mean.
+    /// side is projected onto zero mean and the returned solution has zero mean. This
+    /// requires the conducting region to be connected: a domain split into pieces by
+    /// `σ = 0` walls has one null vector per piece and will not converge.
     Constant,
 }
 
@@ -141,6 +143,9 @@ impl Pcg {
             let pq = dot(p, q);
             if pq <= 0.0 || !pq.is_finite() {
                 // Breakdown: the operator or preconditioner is not SPD on this subspace.
+                if project {
+                    remove_mean(x);
+                }
                 return CgStats {
                     iterations: it - 1,
                     residual: r_norm / b_norm,
