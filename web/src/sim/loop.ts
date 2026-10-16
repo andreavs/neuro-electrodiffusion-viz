@@ -133,7 +133,17 @@ export class RunLoop {
   private build(): void {
     this.solver?.dispose();
     this.solver = null;
-    this.solver = this.factories[this.scale!](this.params);
+    const solver = this.factories[this.scale!](this.params);
+    this.solver = solver;
+    solver.setWake?.(() => {
+      if (this.solver !== solver) return;
+      if (this.running) this.scheduleTick();
+      else {
+        // Paused: publish what arrived (e.g. a fresh release) without stepping.
+        this.dirty = true;
+        this.flush();
+      }
+    });
     this.solverMs = 0;
     this.resetRates();
     // Whatever frame was in flight belongs to the old solver and may never be
@@ -166,9 +176,12 @@ export class RunLoop {
       const t0 = this.host.now();
       const changed = this.solver.advance(this.budgetMs);
       const spent = this.host.now() - t0;
-      this.solverMs = this.solverMs === 0 ? spent : 0.9 * this.solverMs + 0.1 * spent;
+      // A 'wait' tick did no work; averaging it in would hide the real cost.
+      if (changed !== 'wait') this.solverMs = this.solverMs === 0 ? spent : 0.9 * this.solverMs + 0.1 * spent;
       // Finished: idle until a parameter change or action (see `restarted`).
       if (changed === false) return;
+      // Work is running elsewhere: the solver wakes the loop when it has news.
+      if (changed === 'wait') return;
       this.dirty = true;
       if (this.awaitingAck) this.ticksAhead++;
       this.flush();
