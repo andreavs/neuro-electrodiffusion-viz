@@ -129,9 +129,7 @@ export function makeKnpSolver(
       return true;
     },
     frame: () => packFrame(sim, String(params.field), probes, trace.take(), steps),
-    setParams(changed) {
-      apply(changed);
-    },
+    setParams: apply,
     dispose() {
       sim.free();
     },

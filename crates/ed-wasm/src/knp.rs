@@ -48,7 +48,6 @@ impl KnpSim {
         self.tissue.neuron.syn_rate_hz = hz;
         Ok(())
     }
-
     /// Current injected into the soma, nA (depolarising positive).
     pub fn set_stim(&mut self, i_na: f64) -> Result<(), JsError> {
         if !(-MAX_STIM_NA..=MAX_STIM_NA).contains(&i_na) {
@@ -59,7 +58,6 @@ impl KnpSim {
         self.tissue.neuron.i_stim = i_na;
         Ok(())
     }
-
     /// KNP time step, ms (rounded to whole neuron steps of 0.025 ms).
     pub fn set_dt(&mut self, dt: f64) -> Result<(), JsError> {
         if !(DT_RANGE.0..=DT_RANGE.1).contains(&dt) {
@@ -75,7 +73,6 @@ impl KnpSim {
     pub fn dt(&self) -> f64 {
         self.tissue.knp.dt()
     }
-
     /// Takes `n` KNP steps.
     pub fn step(&mut self, n: usize) {
         self.tissue.step(n);
@@ -84,12 +81,10 @@ impl KnpSim {
     pub fn time_ms(&self) -> f64 {
         self.tissue.time_ms()
     }
-
     /// Spikes at the soma so far.
     pub fn spikes(&self) -> f64 {
         self.tissue.spikes() as f64
     }
-
     /// Cells per axis `[nx, ny, nz]`.
     pub fn shape(&self) -> Vec<u32> {
         self.tissue.knp.grid().n.iter().map(|&n| n as u32).collect()
