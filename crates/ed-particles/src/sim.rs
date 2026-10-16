@@ -111,6 +111,11 @@ fn resolve_collision<G: Geometry + ?Sized>(geom: &G, from: Vec3, to: Vec3) -> St
             return StepOutcome::Absorbed;
         }
         let excess = (end[0] - b[0]) * n[0] + (end[1] - b[1]) * n[1] + (end[2] - b[2]) * n[2];
+        if excess <= 0.0 {
+            // `end` is outside but behind the tangent plane: the wall curves into the domain
+            // (the funnel fillet). Mirroring in the tangent plane would not bring it back.
+            return mirror_in_nearest_wall(geom, end, inside);
+        }
         let reflected = [
             end[0] - 2.0 * excess * n[0],
             end[1] - 2.0 * excess * n[1],
@@ -122,12 +127,31 @@ fn resolve_collision<G: Geometry + ?Sized>(geom: &G, from: Vec3, to: Vec3) -> St
         start = inside;
         end = reflected;
     }
-    StepOutcome::Inside(start)
+    mirror_in_nearest_wall(geom, end, start)
+}
+
+/// Mirrors the outside point `p` through the nearest boundary point, p − 2·sdf(p)·n(p);
+/// if that is not inside either, falls back to `fallback` (an inside point).
+fn mirror_in_nearest_wall<G: Geometry + ?Sized>(geom: &G, p: Vec3, fallback: Vec3) -> StepOutcome {
+    let d = geom.sdf(p);
+    let n = geom.normal(p);
+    let m = [
+        p[0] - 2.0 * d * n[0],
+        p[1] - 2.0 * d * n[1],
+        p[2] - 2.0 * d * n[2],
+    ];
+    if d.is_finite() && geom.contains(m) {
+        StepOutcome::Inside(m)
+    } else {
+        StepOutcome::Inside(fallback)
+    }
 }
 
 /// Finds where the segment `a` (inside) → `b` (outside) crosses the boundary. Returns the
 /// last inside point found on the segment and the boundary point.
 ///
+/// Assumes the step is short compared with the wall's radius of curvature: on a long
+/// segment that leaves and re-enters, it may find a later crossing instead of the first.
 /// Secant steps on the SDF converge in two or three iterations for surfaces that are smooth
 /// on the scale of a step; the Illinois rule and a bisection step every third iteration keep
 /// the bracket shrinking at creases.
@@ -322,6 +346,10 @@ impl<G: Geometry> ParticleSim<G> {
                     }
                 }
             }
+            debug_assert!(
+                drift[..len].iter().flatten().all(|v| v.is_finite()),
+                "electric field returned a non-finite value"
+            );
             for j in 0..len {
                 let i = start + j;
                 let p = [self.x[i], self.y[i], self.z[i]];
@@ -454,7 +482,7 @@ impl<G: Geometry> ParticleSim<G> {
     /// `t_max` go in the last bin.
     pub fn exit_time_histogram(&self, bins: usize, t_max: f64) -> Vec<u32> {
         let mut h = vec![0u32; bins];
-        if bins == 0 || t_max <= 0.0 {
+        if bins == 0 || !t_max.is_finite() || t_max <= 0.0 {
             return h;
         }
         let scale = bins as f64 / t_max;
@@ -589,6 +617,24 @@ mod tests {
     const NECK: f64 = crate::geometry::NECK_RADIUS;
 
     #[test]
+    fn grazing_hit_on_the_funnel_reflects_instead_of_sticking() {
+        // Found in review: reflecting in the tangent plane leaves this step inside the
+        // torus, and the old loop then ping-ponged until it gave up on the wall.
+        let g = SpineGeometry::funneled();
+        let a = [-0.148_135_584, 0.043_695_023, 1.045_471_113];
+        let b = [-0.151_889_974, 0.020_437_573, 1.042_373_450];
+        assert!(g.contains(a) && !g.contains(b));
+        match resolve_step(&g, a, b) {
+            StepOutcome::Inside(p) => {
+                assert!(g.contains(p));
+                // The step overshot the wall by ~1.6e-4 µm, so it ends about that far inside.
+                assert!(g.sdf(p) < -1e-4, "stuck on the wall: sdf {}", g.sdf(p));
+            }
+            StepOutcome::Absorbed => panic!("absorbed"),
+        }
+    }
+
+    #[test]
     fn statistics_bookkeeping() {
         let params = ParticleParams {
             dt: 1e-3,
@@ -613,6 +659,10 @@ mod tests {
 
     // ---- First-passage tests. These run long simulations; CI runs tests in release mode. ----
 
+    /// Work is always split into this many independently seeded threads, so results do not
+    /// depend on the machine's core count.
+    const WORK_UNITS: usize = 8;
+
     /// Runs `n` particles from the head centre until all are absorbed, split across threads.
     fn exit_times(
         geom: SpineGeometry,
@@ -621,9 +671,7 @@ mod tests {
         n: usize,
         seed: u64,
     ) -> Vec<f64> {
-        let threads = std::thread::available_parallelism()
-            .map_or(1, |t| t.get())
-            .min(8);
+        let threads = WORK_UNITS;
         let chunk = n.div_ceil(threads);
         std::thread::scope(|s| {
             let handles: Vec<_> = (0..threads)
@@ -681,8 +729,9 @@ mod tests {
             dt: 2e-4,
             ..Default::default()
         };
-        // Same seed for all three runs (common random numbers) to sharpen the comparison.
-        let n = 300;
+        // True ratios are about 0.73 (out) and 1.4 (in); with 600 particles the standard
+        // error of each ratio is about 6%, so the thresholds sit several SE away.
+        let n = 600;
         let none = mean(&exit_times(g, params, None, n, 9));
         let out = mean(&exit_times(
             g,
@@ -699,8 +748,8 @@ mod tests {
             9,
         ));
         eprintln!("MFPT out {out:.2}, none {none:.2}, in {inward:.2} ms");
-        assert!(out < 0.8 * none, "out {out} vs none {none}");
-        assert!(inward > 1.25 * none, "in {inward} vs none {none}");
+        assert!(out < 0.9 * none, "out {out} vs none {none}");
+        assert!(inward > 1.15 * none, "in {inward} vs none {none}");
     }
 
     #[test]
@@ -716,9 +765,7 @@ mod tests {
         };
         let fine = ParticleParams { dt: 5e-5, ..coarse };
         let n: usize = 2400;
-        let threads = std::thread::available_parallelism()
-            .map_or(1, |t| t.get())
-            .min(8);
+        let threads = WORK_UNITS;
         let per = n.div_ceil(threads);
         let pairs: Vec<(f64, f64)> = std::thread::scope(|s| {
             let hs: Vec<_> = (0..threads)

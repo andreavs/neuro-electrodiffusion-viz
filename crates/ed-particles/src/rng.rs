@@ -50,7 +50,8 @@ impl ZigTables {
         let mut k = [0u32; ZIG_LAYERS];
         let mut w = [0.0; ZIG_LAYERS];
         for i in 0..ZIG_LAYERS {
-            k[i] = (x[i + 1] / x[i] * TWO_POW_24) as u32;
+            // ceil so that |j| < k[i] exactly when |j| / 2²⁴ < x[i + 1] / x[i].
+            k[i] = (x[i + 1] / x[i] * TWO_POW_24).ceil() as u32;
             w[i] = x[i] / TWO_POW_24;
         }
         Self { x, k, w }
