@@ -156,19 +156,35 @@ impl BoundaryConditions {
 /// constants are its null space, provided the region with `σ > 0` is connected.
 /// Cells with `σ = 0` and no shift are uncoupled zero rows: keep the right-hand side zero
 /// there (their solution value is left at 0 by the multigrid smoother).
+///
+/// Individual interior faces can override the harmonic mean with
+/// [`set_face_sigma`](Self::set_face_sigma), e.g. to give a membrane between two cells a
+/// conductance unrelated to either cell, or 0 to make it impermeable.
 #[derive(Clone, Debug)]
 pub struct DiffusionOperator {
     grid: Grid,
     bc: BoundaryConditions,
     pub(super) sigma: Vec<f64>,
     pub(super) shift: Vec<f64>,
+    /// Face coefficients that replace the harmonic mean.
+    pub(super) overrides: Vec<(Face, f64)>,
+    /// When set, `c` is owned by the caller (multigrid coarse levels) and
+    /// [`recompute`](Self::recompute) only rebuilds the diagonal.
+    pub(super) explicit_faces: bool,
     /// `c[a][cell]` couples `cell` to its upper neighbour along axis `a` (0 on the last layer).
-    c: [Vec<f64>; 3],
+    pub(super) c: [Vec<f64>; 3],
     diag: Vec<f64>,
     /// `1 / diag`, or 0 for rows with no coupling at all.
     inv_diag: Vec<f64>,
     /// `nx` zeros, standing in for missing neighbour rows.
     zero_row: Vec<f64>,
+}
+
+/// The interior face between `cell` and its upper neighbour along `axis`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct Face {
+    pub axis: usize,
+    pub cell: usize,
 }
 
 impl DiffusionOperator {
@@ -189,6 +205,8 @@ impl DiffusionOperator {
             bc,
             sigma: sigma.to_vec(),
             shift: vec![0.0; n],
+            overrides: Vec::new(),
+            explicit_faces: false,
             c: [vec![0.0; n], vec![0.0; n], vec![0.0; n]],
             diag: vec![0.0; n],
             inv_diag: vec![0.0; n],
@@ -219,6 +237,16 @@ impl DiffusionOperator {
         &self.shift
     }
 
+    /// The face overrides set with [`set_face_sigma`](Self::set_face_sigma).
+    pub fn face_sigma(&self) -> &[(Face, f64)] {
+        &self.overrides
+    }
+
+    /// Off-diagonal weight `σ_face / h²` coupling `face.cell` to its upper neighbour.
+    pub fn face_weight(&self, face: Face) -> f64 {
+        self.c[face.axis][face.cell]
+    }
+
     /// Sets the per-cell diagonal shift `s` (≥ 0) without reallocating. Call
     /// [`Multigrid::update`](super::Multigrid::update) afterwards if one is in use.
     pub fn set_shift(&mut self, shift: &[f64]) {
@@ -227,7 +255,7 @@ impl DiffusionOperator {
         self.recompute();
     }
 
-    /// Replaces the coefficients without reallocating. Call
+    /// Replaces the coefficients without reallocating. Face overrides are kept. Call
     /// [`Multigrid::update`](super::Multigrid::update) afterwards if one is in use.
     pub fn update_sigma(&mut self, sigma: &[f64]) {
         assert_eq!(sigma.len(), self.sigma.len());
@@ -235,29 +263,68 @@ impl DiffusionOperator {
         self.recompute();
     }
 
-    /// Rebuilds face coefficients and the diagonal from `self.sigma` and `self.shift`.
+    /// Replaces the face overrides: each listed interior face gets coefficient `σ_face ≥ 0`
+    /// instead of the harmonic mean of its two cells. Build a [`Multigrid`](super::Multigrid)
+    /// after this call (it coarsens faces differently once overrides exist), or call its
+    /// [`update`](super::Multigrid::update) when only the values changed.
+    pub fn set_face_sigma(&mut self, faces: &[(Face, f64)]) {
+        let g = self.grid;
+        for &(f, s) in faces {
+            assert!(
+                f.axis < g.dim && f.cell < g.len(),
+                "face {f:?} out of range"
+            );
+            let pos = [
+                f.cell % g.n[0],
+                (f.cell / g.n[0]) % g.n[1],
+                f.cell / (g.n[0] * g.n[1]),
+            ];
+            assert!(
+                pos[f.axis] + 1 < g.n[f.axis],
+                "face {f:?} is on the boundary"
+            );
+            assert!(s >= 0.0, "face coefficient must be non-negative");
+        }
+        self.overrides.clear();
+        self.overrides.extend_from_slice(faces);
+        self.recompute();
+    }
+
+    /// Rebuilds face coefficients (unless [`explicit_faces`](Self::explicit_faces)) and the
+    /// diagonal from `self.sigma`, the overrides and `self.shift`.
     pub(super) fn recompute(&mut self) {
         let g = self.grid;
         let stride = [1, g.n[0], g.n[0] * g.n[1]];
-        let sigma = &self.sigma;
-        self.diag.copy_from_slice(&self.shift);
-        for a in 0..3 {
-            self.c[a].fill(0.0);
-            if a >= g.dim {
-                continue;
+        if !self.explicit_faces {
+            let sigma = &self.sigma;
+            for a in 0..3 {
+                let c = &mut self.c[a];
+                c.fill(0.0);
+                if a >= g.dim {
+                    continue;
+                }
+                let inv_h2 = 1.0 / (g.h[a] * g.h[a]);
+                g.for_each_cell(|i, j, k, cell| {
+                    if [i, j, k][a] + 1 < g.n[a] {
+                        c[cell] = harmonic_mean(sigma[cell], sigma[cell + stride[a]]) * inv_h2;
+                    }
+                });
             }
+            for &(f, s) in &self.overrides {
+                self.c[f.axis][f.cell] = s / (g.h[f.axis] * g.h[f.axis]);
+            }
+        }
+        self.diag.copy_from_slice(&self.shift);
+        for a in 0..g.dim {
             let inv_h2 = 1.0 / (g.h[a] * g.h[a]);
-            let (c, diag) = (&mut self.c[a], &mut self.diag);
+            let (c, diag, sigma) = (&self.c[a], &mut self.diag, &self.sigma);
             let lower_dirichlet = self.bc.lower[a] == Boundary::Dirichlet;
             let upper_dirichlet = self.bc.upper[a] == Boundary::Dirichlet;
             g.for_each_cell(|i, j, k, cell| {
                 let pos = [i, j, k][a];
                 if pos + 1 < g.n[a] {
-                    let nb = cell + stride[a];
-                    let w = harmonic_mean(sigma[cell], sigma[nb]) * inv_h2;
-                    c[cell] = w;
-                    diag[cell] += w;
-                    diag[nb] += w;
+                    diag[cell] += c[cell];
+                    diag[cell + stride[a]] += c[cell];
                 } else if upper_dirichlet {
                     diag[cell] += 2.0 * sigma[cell] * inv_h2;
                 }

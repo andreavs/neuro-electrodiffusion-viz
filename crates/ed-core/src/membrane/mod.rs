@@ -236,6 +236,10 @@ pub struct MembranePatches {
     /// semi-implicit coupling.
     pub g_ch: Vec<f64>,
 
+    /// Tabulated gate updates, when enabled with [`use_gate_table`](Self::use_gate_table).
+    gate_table: Option<hh::GateTable>,
+    use_table: bool,
+
     // Nernst potentials, refreshed from the concentrations on each call.
     e_na: Vec<f64>,
     e_k: Vec<f64>,
@@ -276,6 +280,8 @@ impl MembranePatches {
             i_cl: vec![0.0; len],
             i_ch: vec![0.0; len],
             g_ch: vec![0.0; len],
+            gate_table: None,
+            use_table: false,
             e_na: vec![0.0; len],
             e_k: vec![0.0; len],
             e_cl: vec![0.0; len],
@@ -304,6 +310,13 @@ impl MembranePatches {
             cl_i: self.cl_i[i],
             cl_e: self.cl_e[i],
         }
+    }
+
+    /// Use a [`hh::GateTable`] for the gate updates in [`advance`](Self::advance): several
+    /// times faster for large populations, with gate values within ~10⁻⁵ of the exact
+    /// update. Off by default.
+    pub fn use_gate_table(&mut self, enabled: bool) {
+        self.use_table = enabled;
     }
 
     /// Schedule a synaptic input with peak conductance `g` (mS/cm²) starting at
@@ -399,6 +412,20 @@ impl MembranePatches {
         let c_m = self.params.c_m;
         let hh = self.params.hodgkin_huxley;
         let v_rest = self.params.v_rest_hh;
+        if hh
+            && self.use_table
+            && !self
+                .gate_table
+                .as_ref()
+                .is_some_and(|t| t.matches(v_rest, h))
+        {
+            self.gate_table = Some(hh::GateTable::new(v_rest, h));
+        }
+        let table = if self.use_table {
+            self.gate_table.take()
+        } else {
+            None
+        };
         for s in 0..substeps {
             let ts = t + s as f64 * h;
             for i in 0..self.len() {
@@ -414,12 +441,18 @@ impl MembranePatches {
                     phi + h * src / c_m
                 };
                 self.phi_m[i] = new_phi;
-                if hh {
+                if let Some(t) = &table {
+                    [self.m[i], self.h[i], self.n[i]] =
+                        t.step(new_phi, [self.m[i], self.h[i], self.n[i]]);
+                } else if hh {
                     self.m[i] = hh::rates_m(new_phi, v_rest).rush_larsen(self.m[i], h);
                     self.h[i] = hh::rates_h(new_phi, v_rest).rush_larsen(self.h[i], h);
                     self.n[i] = hh::rates_n(new_phi, v_rest).rush_larsen(self.n[i], h);
                 }
             }
+        }
+        if table.is_some() {
+            self.gate_table = table;
         }
         self.fill_currents(t + dt);
     }

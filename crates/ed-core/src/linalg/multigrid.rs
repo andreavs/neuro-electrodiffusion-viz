@@ -17,7 +17,14 @@ use super::{DiffusionOperator, Grid, LinearOperator, Preconditioner};
 /// Coarsening needs even cell counts, so grids of size `k·2^m` with small `k` (such as
 /// 64×64×32) work best. An axis with an odd count stops being coarsened, and the hierarchy
 /// ends early with a larger coarsest level; CG still converges, with 2–6× more iterations.
-/// Strongly anisotropic cells (`h` differing per axis) also cost extra iterations.
+/// With anisotropic cells, only the axes with the finest spacing (within a factor 1.5) are
+/// coarsened until the cells are close to isotropic (semi-coarsening).
+///
+/// If the fine operator has face overrides ([`DiffusionOperator::set_face_sigma`]), every
+/// coarse face coefficient is derived from the fine face coefficients instead: the fine
+/// faces crossed by each child column are combined in series (half weight for the faces
+/// inside the two coarse cells) and the columns in parallel. Impermeable or weakly
+/// conducting fine faces such as membranes therefore stay (nearly) closed on coarse levels.
 /// [`coarsest_len`](Self::coarsest_len) shows where the hierarchy ended.
 #[derive(Clone, Debug)]
 pub struct Multigrid {
@@ -42,17 +49,13 @@ impl Multigrid {
     pub fn new(fine: &DiffusionOperator) -> Self {
         let mut ops = vec![fine.clone()];
         let mut factors = Vec::new();
+        let face_mode = !fine.face_sigma().is_empty();
         loop {
             let g = *ops.last().expect("fine level").grid();
             if g.len() <= COARSEST_CELLS {
                 break;
             }
-            let mut f = [1usize; 3];
-            for (a, fa) in f.iter_mut().enumerate().take(g.dim) {
-                if g.n[a] >= 4 && g.n[a] % 2 == 0 {
-                    *fa = 2;
-                }
-            }
+            let f = coarsening_factors(&g);
             if f == [1, 1, 1] {
                 break;
             }
@@ -66,6 +69,10 @@ impl Multigrid {
             restrict(&g, &cg, f, &parent.sigma, &mut sigma);
             restrict(&g, &cg, f, &parent.shift, &mut shift);
             let mut op = DiffusionOperator::new(cg, *fine.boundary_conditions(), &sigma);
+            if face_mode {
+                op.explicit_faces = true;
+                coarsen_faces(parent, f, &mut op.c);
+            }
             op.set_shift(&shift);
             ops.push(op);
             factors.push(f);
@@ -102,9 +109,16 @@ impl Multigrid {
             fine.boundary_conditions(),
             self.ops[0].boundary_conditions()
         );
-        self.ops[0].sigma.copy_from_slice(&fine.sigma);
-        self.ops[0].shift.copy_from_slice(&fine.shift);
-        self.ops[0].recompute();
+        assert_eq!(
+            fine.face_sigma().len(),
+            self.ops[0].face_sigma().len(),
+            "rebuild the multigrid after changing which faces are overridden"
+        );
+        let top = &mut self.ops[0];
+        top.sigma.copy_from_slice(&fine.sigma);
+        top.shift.copy_from_slice(&fine.shift);
+        top.overrides.copy_from_slice(&fine.overrides);
+        top.recompute();
         for l in 0..self.factors.len() {
             let (head, tail) = self.ops.split_at_mut(l + 1);
             let (f_op, c_op) = (&head[l], &mut tail[0]);
@@ -123,6 +137,9 @@ impl Multigrid {
                 &f_op.shift,
                 &mut c_op.shift,
             );
+            if c_op.explicit_faces {
+                coarsen_faces(f_op, self.factors[l], &mut c_op.c);
+            }
             c_op.recompute();
         }
     }
@@ -173,6 +190,59 @@ impl Preconditioner for Multigrid {
         }
 
         z.copy_from_slice(&self.x[0]);
+    }
+}
+
+/// Coarsening factor per axis for the level below `g`: halve every active axis with an even
+/// count ≥ 4 whose spacing is within 1.5× of the finest spacing; if none qualifies, every
+/// even axis ≥ 4.
+fn coarsening_factors(g: &Grid) -> [usize; 3] {
+    let h_min = g.h[..g.dim].iter().copied().fold(f64::INFINITY, f64::min);
+    let even = |a: usize| g.n[a] >= 4 && g.n[a] % 2 == 0;
+    for max_h in [1.5 * h_min, f64::INFINITY] {
+        let mut f = [1usize; 3];
+        for (a, fa) in f.iter_mut().enumerate().take(g.dim) {
+            if even(a) && g.h[a] <= max_h {
+                *fa = 2;
+            }
+        }
+        if f != [1, 1, 1] {
+            return f;
+        }
+    }
+    [1, 1, 1]
+}
+
+/// Coarse face weights from the fine operator's face weights (series along the axis,
+/// parallel across it), written into `coarse_c`.
+fn coarsen_faces(fine: &DiffusionOperator, f: [usize; 3], coarse_c: &mut [Vec<f64>; 3]) {
+    let g = *fine.grid();
+    let (cnx, cny) = (g.n[0] / f[0], g.n[1] / f[1]);
+    let stride = [1, g.n[0], g.n[0] * g.n[1]];
+    // Face weight times cell volume is the face conductance.
+    let vol = g.h[0] * g.h[1] * if g.dim == 3 { g.h[2] } else { 1.0 };
+    let coarse_vol = vol * (f[0] * f[1] * f[2]) as f64;
+    for a in 0..3 {
+        coarse_c[a].fill(0.0);
+        if a >= g.dim {
+            continue;
+        }
+        let c = &fine.c[a];
+        let out = &mut coarse_c[a];
+        g.for_each_cell(|i, j, k, cell| {
+            let pos = [i, j, k][a];
+            // Only the last fine layer of a coarse cell touches the next coarse cell.
+            if pos % f[a] != f[a] - 1 || pos + 1 >= g.n[a] {
+                return;
+            }
+            // Series resistance of this column (1/0 = ∞ makes a closed face).
+            let mut r = 1.0 / c[cell];
+            if f[a] == 2 {
+                r += 0.5 / c[cell - stride[a]] + 0.5 / c[cell + stride[a]];
+            }
+            let parent = i / f[0] + cnx * (j / f[1] + cny * (k / f[2]));
+            out[parent] += vol / r / coarse_vol;
+        });
     }
 }
 
@@ -228,6 +298,44 @@ mod tests {
         let mg = Multigrid::new(&op);
         assert_eq!(mg.levels(), 5);
         assert_eq!(mg.ops.last().unwrap().grid().n, [4, 4, 2]);
+    }
+
+    #[test]
+    fn anisotropic_grid_is_semi_coarsened() {
+        let g = Grid::new_3d([32, 16, 16], [2.0, 0.5, 0.5]);
+        assert_eq!(coarsening_factors(&g), [1, 2, 2]);
+        let g = Grid::new_3d([32, 16, 16], [2.0, 1.0, 1.0]);
+        assert_eq!(coarsening_factors(&g), [1, 2, 2]);
+        let g = Grid::new_3d([32, 3, 3], [2.0, 1.0, 1.0]);
+        assert_eq!(coarsening_factors(&g), [2, 1, 1]);
+        let g = Grid::new_3d([32, 16, 16], [1.2, 1.0, 1.0]);
+        assert_eq!(coarsening_factors(&g), [2, 2, 2]);
+    }
+
+    #[test]
+    fn face_coarsening_reproduces_uniform_coefficients() {
+        // Overriding every face with the value it already has must not change the levels.
+        let grid = Grid::new_3d([16, 8, 4], [1.0, 0.5, 0.5]);
+        let plain = DiffusionOperator::uniform(grid, BoundaryConditions::neumann(), 2.0);
+        let mut faces = Vec::new();
+        grid.for_each_cell(|i, j, k, cell| {
+            for (axis, p) in [i, j, k].into_iter().enumerate() {
+                if p + 1 < grid.n[axis] {
+                    faces.push((crate::linalg::Face { axis, cell }, 2.0));
+                }
+            }
+        });
+        let mut over = plain.clone();
+        over.set_face_sigma(&faces);
+        let (a, b) = (Multigrid::new(&plain), Multigrid::new(&over));
+        assert_eq!(a.levels(), b.levels());
+        for (pa, pb) in a.ops.iter().zip(&b.ops) {
+            for axis in 0..3 {
+                for (x, y) in pa.c[axis].iter().zip(&pb.c[axis]) {
+                    assert!((x - y).abs() < 1e-12 * x.abs().max(1.0), "{x} vs {y}");
+                }
+            }
+        }
     }
 
     #[test]

@@ -35,7 +35,7 @@ impl Default for CgOptions {
 }
 
 /// Result of a CG solve.
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct CgStats {
     /// Iterations performed (0 if the initial guess already satisfied the tolerance).
     pub iterations: usize,
@@ -153,13 +153,11 @@ impl Pcg {
                 };
             }
             let alpha = rz / pq;
-            let mut rr = 0.0;
             for i in 0..n {
                 x[i] += alpha * p[i];
                 r[i] -= alpha * q[i];
-                rr += r[i] * r[i];
             }
-            r_norm = rr.sqrt();
+            r_norm = dot(r, r).sqrt();
             if r_norm <= tol {
                 if project {
                     remove_mean(x);

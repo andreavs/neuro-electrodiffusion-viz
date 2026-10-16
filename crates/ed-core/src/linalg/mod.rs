@@ -18,7 +18,7 @@ mod multigrid;
 
 pub use cg::{CgOptions, CgStats, Identity, Jacobi, NullSpace, Pcg};
 pub use csr::CsrMatrix;
-pub use grid::{Boundary, BoundaryConditions, DiffusionOperator, Grid, Side};
+pub use grid::{Boundary, BoundaryConditions, DiffusionOperator, Face, Grid, Side};
 pub use multigrid::Multigrid;
 
 /// A square linear operator `y = A x`.
@@ -44,7 +44,21 @@ pub trait Preconditioner {
 /// Euclidean inner product.
 pub fn dot(a: &[f64], b: &[f64]) -> f64 {
     debug_assert_eq!(a.len(), b.len());
-    a.iter().zip(b).map(|(x, y)| x * y).sum()
+    // Independent partial sums let the additions pipeline and vectorise.
+    let mut acc = [0.0; 4];
+    let (ca, cb) = (a.chunks_exact(4), b.chunks_exact(4));
+    let tail: f64 = ca
+        .remainder()
+        .iter()
+        .zip(cb.remainder())
+        .map(|(x, y)| x * y)
+        .sum();
+    for (x, y) in ca.zip(cb) {
+        for l in 0..4 {
+            acc[l] += x[l] * y[l];
+        }
+    }
+    (acc[0] + acc[1]) + (acc[2] + acc[3]) + tail
 }
 
 /// Euclidean norm.

@@ -1,7 +1,7 @@
 //! Convergence and solver tests for `ed_core::linalg` on manufactured solutions.
 
 use ed_core::linalg::{
-    Boundary, BoundaryConditions, CgOptions, DiffusionOperator, Grid, Jacobi, LinearOperator,
+    Boundary, BoundaryConditions, CgOptions, DiffusionOperator, Face, Grid, Jacobi, LinearOperator,
     Multigrid, NullSpace, Pcg, Preconditioner,
 };
 use std::f64::consts::PI;
@@ -502,4 +502,96 @@ fn bench_64x64x32() {
             assert!(cold.converged && warm.converged);
         }
     }
+}
+
+/// Two rectangular "axons" along x inside a box, wrapped in faces whose coefficient is
+/// `gamma` (a weakly conducting membrane), on an anisotropic grid.
+fn membrane_problem(gamma: f64) -> (DiffusionOperator, Vec<f64>) {
+    let grid = Grid::new_3d([64, 16, 16], [2.0, 0.5, 0.5]);
+    let inside = |i: usize, j: usize, k: usize| {
+        (2..62).contains(&i)
+            && ((4..6).contains(&j) || (10..12).contains(&j))
+            && (6..8).contains(&k)
+    };
+    let mut sigma = vec![1.3; grid.len()];
+    let mut faces = Vec::new();
+    grid.for_each_cell(|i, j, k, c| {
+        if inside(i, j, k) {
+            sigma[c] = 2.0;
+        }
+        let up = [(i + 1, j, k), (i, j + 1, k), (i, j, k + 1)];
+        for (axis, &(a, b, d)) in up.iter().enumerate() {
+            if a < 64 && b < 16 && d < 16 && inside(i, j, k) != inside(a, b, d) {
+                faces.push((Face { axis, cell: c }, gamma));
+            }
+        }
+    });
+    let mut op = DiffusionOperator::new(grid, BoundaryConditions::neumann(), &sigma);
+    op.set_face_sigma(&faces);
+    let b: Vec<f64> = (0..grid.len()).map(|c| ((c as f64) * 0.37).sin()).collect();
+    (op, b)
+}
+
+#[test]
+fn face_overrides_replace_harmonic_mean_and_stay_symmetric() {
+    let (op, _) = membrane_problem(1e-3);
+    let f = op.face_sigma()[0].0;
+    assert!((op.face_weight(f) - 1e-3 / (op.grid().h[f.axis].powi(2))).abs() < 1e-15);
+    let a = op.to_csr();
+    for r in 0..a.n_rows() {
+        for (c, v) in a.row(r) {
+            assert_eq!(v, a.get(c, r));
+        }
+    }
+    let x: Vec<f64> = (0..op.len()).map(|i| (i as f64 * 0.1).cos()).collect();
+    let (mut y1, mut y2) = (vec![0.0; op.len()], vec![0.0; op.len()]);
+    op.apply(&x, &mut y1);
+    a.matvec(&x, &mut y2);
+    assert!(max_err(&y1, &y2) < 1e-12);
+    op.apply(&vec![1.0; op.len()], &mut y1);
+    assert!(y1.iter().all(|v| v.abs() < 1e-12));
+}
+
+#[test]
+fn closed_faces_decouple_regions() {
+    // Close every membrane face: a source inside an axon cannot reach the outside.
+    let (mut op, _) = membrane_problem(0.0);
+    op.set_shift(&vec![1.0; op.len()]);
+    let mut b = vec![0.0; op.len()];
+    let src = op.grid().index(30, 5, 7);
+    b[src] = 1.0;
+    let x = solve_mg(&op, &b, NullSpace::None);
+    assert!(x[src] > 0.0);
+    assert!(x[op.grid().index(30, 5, 3)].abs() < 1e-10 * x[src]);
+    assert!(x[op.grid().index(30, 10, 7)].abs() < 1e-10 * x[src]);
+}
+
+#[test]
+fn multigrid_handles_membrane_faces() {
+    let (op, b) = membrane_problem(1e-4);
+    let opts = CgOptions {
+        rtol: 1e-8,
+        null_space: NullSpace::Constant,
+        max_iter: 5000,
+        ..Default::default()
+    };
+    let mut cg = Pcg::new(op.len());
+    let mut run = |m: &mut dyn Preconditioner| {
+        let mut x = vec![0.0; op.len()];
+        let stats = cg.solve(&op, m, &b, &mut x, &opts);
+        assert!(stats.converged, "{stats:?}");
+        (x, stats.iterations)
+    };
+    let (xj, it_j) = run(&mut Jacobi::new(&op));
+    let mut mg = Multigrid::new(&op);
+    let (xm, it_m) = run(&mut mg);
+    println!("membrane problem: multigrid {it_m}, Jacobi {it_j} iterations");
+    let scale = xj.iter().fold(0.0f64, |m, v| m.max(v.abs()));
+    assert!(max_err(&xj, &xm) < 1e-5 * scale);
+    assert!(
+        it_m * 5 < it_j,
+        "multigrid {it_m} vs Jacobi {it_j} iterations"
+    );
+    // The anisotropic grid is semi-coarsened in y and z first.
+    assert!(mg.levels() >= 4);
 }
