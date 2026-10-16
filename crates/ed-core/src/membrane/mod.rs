@@ -390,6 +390,39 @@ impl MembranePatches {
     /// start of each substep, so an onset inside a substep takes effect at the
     /// next one. On return the current arrays hold the currents at `t + dt`.
     pub fn advance(&mut self, t: f64, dt: f64, substeps: usize, i_ext: Option<&[f64]>) {
+        self.advance_impl(t, dt, substeps, i_ext, None);
+    }
+
+    /// Same as [`advance`](Self::advance), and also writes the mean Na⁺, K⁺ and Cl⁻
+    /// channel currents over `[t, t + dt]` (µA/cm², outward positive) into `mean`.
+    ///
+    /// The means integrate each substep's exponential φ_M trajectory exactly, so they are
+    /// consistent with the potential update: with `i_ext = None`,
+    /// `Σ_k mean_k = −C_M (φ_M(t + dt) − φ_M(t)) / dt` to rounding. A coupled solver can
+    /// therefore move exactly the charge that left the membrane capacitor.
+    pub fn advance_with_mean_currents(
+        &mut self,
+        t: f64,
+        dt: f64,
+        substeps: usize,
+        i_ext: Option<&[f64]>,
+        mean: [&mut [f64]; 3],
+    ) {
+        assert!(
+            mean.iter().all(|m| m.len() == self.len()),
+            "mean current length mismatch"
+        );
+        self.advance_impl(t, dt, substeps, i_ext, Some(mean));
+    }
+
+    fn advance_impl(
+        &mut self,
+        t: f64,
+        dt: f64,
+        substeps: usize,
+        i_ext: Option<&[f64]>,
+        mut mean: Option<[&mut [f64]; 3]>,
+    ) {
         assert!(substeps > 0, "substeps must be positive");
         if let Some(ext) = i_ext {
             assert_eq!(ext.len(), self.len(), "i_ext length mismatch");
@@ -399,6 +432,10 @@ impl MembranePatches {
         let c_m = self.params.c_m;
         let hh = self.params.hodgkin_huxley;
         let v_rest = self.params.v_rest_hh;
+        if let Some(m) = &mut mean {
+            m.iter_mut().for_each(|m| m.fill(0.0));
+        }
+        let w = 1.0 / substeps as f64;
         for s in 0..substeps {
             let ts = t + s as f64 * h;
             for i in 0..self.len() {
@@ -409,7 +446,15 @@ impl MembranePatches {
                 let new_phi = if g > 0.0 {
                     let phi_inf =
                         (g_na * self.e_na[i] + g_k * self.e_k[i] + g_cl * self.e_cl[i] + src) / g;
-                    phi_inf + (phi - phi_inf) * (-h * g / c_m).exp()
+                    let x = h * g / c_m;
+                    if let Some([m_na, m_k, m_cl]) = &mut mean {
+                        // Time average of φ_M over the substep: φ_inf + (φ − φ_inf)(1 − e⁻ˣ)/x.
+                        let phi_avg = phi_inf + (phi - phi_inf) * (-(-x).exp_m1() / x);
+                        m_na[i] += w * g_na * (phi_avg - self.e_na[i]);
+                        m_k[i] += w * g_k * (phi_avg - self.e_k[i]);
+                        m_cl[i] += w * g_cl * (phi_avg - self.e_cl[i]);
+                    }
+                    phi_inf + (phi - phi_inf) * (-x).exp()
                 } else {
                     phi + h * src / c_m
                 };

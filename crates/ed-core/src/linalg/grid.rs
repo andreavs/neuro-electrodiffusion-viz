@@ -151,6 +151,10 @@ impl BoundaryConditions {
 /// `-∇·(σ∇u)` pointwise. A point source of total strength `I` deposited in one cell
 /// therefore enters the right-hand side as `I / (hx·hy·hz)` (`I / (hx·hy)` in 2-D).
 ///
+/// Interior face coefficients can instead be given explicitly with
+/// [`set_face_sigma`](Self::set_face_sigma), e.g. to model membranes or insulating walls
+/// between cells; the per-cell `σ` is then only used on Dirichlet faces.
+///
 /// Dirichlet faces use a ghost value at distance `h/2`. The operator is symmetric and
 /// positive definite unless every face is Neumann and the shift is zero; then the
 /// constants are its null space, provided the region with `σ > 0` is connected.
@@ -162,6 +166,8 @@ pub struct DiffusionOperator {
     bc: BoundaryConditions,
     pub(super) sigma: Vec<f64>,
     pub(super) shift: Vec<f64>,
+    /// Explicit interior face coefficients, replacing the harmonic means when set.
+    pub(super) face_sigma: Option<[Vec<f64>; 3]>,
     /// `c[a][cell]` couples `cell` to its upper neighbour along axis `a` (0 on the last layer).
     c: [Vec<f64>; 3],
     diag: Vec<f64>,
@@ -189,6 +195,7 @@ impl DiffusionOperator {
             bc,
             sigma: sigma.to_vec(),
             shift: vec![0.0; n],
+            face_sigma: None,
             c: [vec![0.0; n], vec![0.0; n], vec![0.0; n]],
             diag: vec![0.0; n],
             inv_diag: vec![0.0; n],
@@ -235,11 +242,34 @@ impl DiffusionOperator {
         self.recompute();
     }
 
+    /// Explicit face coefficients, if set with [`set_face_sigma`](Self::set_face_sigma).
+    pub fn face_sigma(&self) -> Option<&[Vec<f64>; 3]> {
+        self.face_sigma.as_ref()
+    }
+
+    /// Sets the interior face coefficients explicitly, replacing the harmonic means of the
+    /// cell values. `face[a][cell]` (≥ 0) couples `cell` to its upper neighbour along axis
+    /// `a`; entries on the last layer of an axis, and for inactive axes, are ignored.
+    /// Allocates on the first call only. Call
+    /// [`Multigrid::update`](super::Multigrid::update) afterwards if one is in use.
+    pub fn set_face_sigma(&mut self, face: [&[f64]; 3]) {
+        let n = self.grid.len();
+        assert!(face.iter().all(|f| f.len() == n), "one face value per cell");
+        let dst = self
+            .face_sigma
+            .get_or_insert_with(|| [vec![0.0; n], vec![0.0; n], vec![0.0; n]]);
+        for (d, f) in dst.iter_mut().zip(face) {
+            d.copy_from_slice(f);
+        }
+        self.recompute();
+    }
+
     /// Rebuilds face coefficients and the diagonal from `self.sigma` and `self.shift`.
     pub(super) fn recompute(&mut self) {
         let g = self.grid;
         let stride = [1, g.n[0], g.n[0] * g.n[1]];
         let sigma = &self.sigma;
+        let face_sigma = self.face_sigma.as_ref();
         self.diag.copy_from_slice(&self.shift);
         for a in 0..3 {
             self.c[a].fill(0.0);
@@ -254,7 +284,11 @@ impl DiffusionOperator {
                 let pos = [i, j, k][a];
                 if pos + 1 < g.n[a] {
                     let nb = cell + stride[a];
-                    let w = harmonic_mean(sigma[cell], sigma[nb]) * inv_h2;
+                    let s = match face_sigma {
+                        Some(f) => f[a][cell],
+                        None => harmonic_mean(sigma[cell], sigma[nb]),
+                    };
+                    let w = s * inv_h2;
                     c[cell] = w;
                     diag[cell] += w;
                     diag[nb] += w;
@@ -612,6 +646,39 @@ mod tests {
         for (u, v) in x.iter().zip(&exact) {
             assert!((u - v).abs() < 1e-10);
         }
+    }
+
+    #[test]
+    fn face_sigma_overrides_harmonic_means() {
+        let grid = Grid::new_3d([4, 3, 2], [0.5, 1.0, 2.0]);
+        let sigma = vec![2.0; grid.len()];
+        let mut op = DiffusionOperator::new(grid, BoundaryConditions::neumann(), &sigma);
+        let reference = op.to_csr();
+        // Same values as the harmonic means: identical operator.
+        op.set_face_sigma([&sigma, &sigma, &sigma]);
+        let same = op.to_csr();
+        for r in 0..grid.len() {
+            for (c, v) in reference.row(r) {
+                assert_eq!(same.get(r, c), v);
+            }
+        }
+        // Cut every x-face between i = 1 and i = 2 and weaken one y-face.
+        let mut fx = sigma.clone();
+        let mut fy = sigma.clone();
+        grid.for_each_cell(|i, _, _, c| {
+            if i == 1 {
+                fx[c] = 0.0;
+            }
+        });
+        fy[grid.index(0, 0, 0)] = 0.5;
+        op.set_face_sigma([&fx, &fy, &sigma]);
+        let a = op.to_csr();
+        let (c0, c1) = (grid.index(1, 0, 0), grid.index(2, 0, 0));
+        assert_eq!(a.get(c0, c1), 0.0);
+        assert_eq!(a.get(grid.index(0, 0, 0), grid.index(0, 1, 0)), -0.5);
+        let mut y = vec![0.0; grid.len()];
+        op.apply(&vec![1.0; grid.len()], &mut y);
+        assert!(y.iter().all(|v| v.abs() < 1e-12));
     }
 
     #[test]
