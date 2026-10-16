@@ -13,6 +13,9 @@ Work is tracked as GitHub issues. Each issue lists its dependencies and acceptan
    cargo fmt --all && cargo clippy --workspace --all-targets -- -D warnings && cargo test --workspace
    cd web && npm run wasm && npm run typecheck && npm test && npm run build && npm run e2e
    ```
+   `npm run e2e` is a Playwright smoke test (`web/e2e/`) against the built site. Once a scale's
+   view no longer renders the placeholder (`[data-placeholder]`), the test requires it to draw a
+   non-blank `<canvas>`, so call `client.ready()` and start rendering on mount.
 5. Open a PR that says `Closes #<number>`, describe what a user would see, and get a review.
    CI must be green before merge. Merging to `main` deploys automatically.
 

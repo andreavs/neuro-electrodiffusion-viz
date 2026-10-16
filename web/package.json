@@ -6,9 +6,9 @@
   "scripts": {
     "wasm": "wasm-pack build ../crates/ed-wasm --release --target web --out-dir ../../web/src/wasm/pkg --out-name ed_wasm",
     "dev": "vite",
-    "build": "tsc --noEmit && vite build",
+    "build": "npm run typecheck && vite build",
     "preview": "vite preview",
-    "typecheck": "tsc --noEmit",
+    "typecheck": "tsc --noEmit && tsc -p tsconfig.node.json",
     "test": "vitest run",
     "e2e": "playwright test"
   },

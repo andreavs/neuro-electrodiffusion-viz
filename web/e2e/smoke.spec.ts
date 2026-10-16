@@ -1,21 +1,12 @@
-import { expect, test, type Page } from '@playwright/test';
+import { expect, test, type Locator, type Page } from '@playwright/test';
 
-interface ScaleCase {
-  id: 'knp' | 'emi' | 'particles';
-  /**
-   * Set to true once the scale's real view lands (#7 knp, #9 emi, #11 particles):
-   * the view must then render a <canvas> whose pixels change while it runs.
-   */
-  frames: boolean;
-}
+const SCALE_IDS = ['knp', 'emi', 'particles'] as const;
 
-const SCALES: ScaleCase[] = [
-  { id: 'knp', frames: false },
-  { id: 'emi', frames: false },
-  { id: 'particles', frames: false },
-];
-
-/** Collects console errors, uncaught exceptions and unhandled rejections from the page and its workers. */
+/**
+ * Collects console errors, uncaught exceptions and unhandled rejections from the page and
+ * its workers (Chromium reports worker errors on the page), failed requests, and assets
+ * that `vite preview`'s SPA fallback answered with index.html instead of a 404.
+ */
 function watchErrors(page: Page): string[] {
   const errors: string[] = [];
   page.on('console', (msg) => {
@@ -24,48 +15,74 @@ function watchErrors(page: Page): string[] {
   page.on('pageerror', (err) => errors.push(`pageerror: ${err.message}`));
   page.on('requestfailed', (req) => errors.push(`requestfailed: ${req.url()} ${req.failure()?.errorText ?? ''}`));
   page.on('response', (res) => {
-    if (res.status() >= 400) errors.push(`http ${res.status()}: ${res.url()}`);
+    const url = new URL(res.url());
+    if (res.status() >= 400) errors.push(`http ${res.status()}: ${url.pathname}`);
+    else if (url.pathname.includes('/assets/') && (res.headers()['content-type'] ?? '').includes('text/html')) {
+      errors.push(`missing asset (got index.html): ${url.pathname}`);
+    }
   });
   return errors;
+}
+
+/**
+ * Waits until the worker reports the WASM solver loaded (`<html data-solver="ready">`, set by
+ * SimClient.ready()). Fails as soon as an error is collected or the solver reports an error,
+ * with the errors in the message, instead of running into the timeout.
+ */
+async function expectSolverReady(page: Page, errors: string[], timeoutMs = 10_000): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  for (;;) {
+    const state = await page.locator('html').getAttribute('data-solver');
+    if (errors.length || state === 'error') {
+      throw new Error(`solver failed to load (data-solver=${state}):\n${errors.join('\n')}`);
+    }
+    if (state === 'ready') return;
+    if (Date.now() > deadline) throw new Error(`solver not ready after ${timeoutMs} ms (data-solver=${state})`);
+    await page.waitForTimeout(50);
+  }
+}
+
+/** True if the element's screenshot contains more than one colour. */
+async function isNonBlank(page: Page, el: Locator): Promise<boolean> {
+  const png = (await el.screenshot()).toString('base64');
+  return page.evaluate(async (b64) => {
+    const img = new Image();
+    img.src = `data:image/png;base64,${b64}`;
+    await img.decode();
+    const c = document.createElement('canvas');
+    c.width = img.width;
+    c.height = img.height;
+    const ctx = c.getContext('2d')!;
+    ctx.drawImage(img, 0, 0);
+    const px = new Uint32Array(ctx.getImageData(0, 0, c.width, c.height).data.buffer);
+    return px.some((p) => p !== px[0]);
+  }, png);
 }
 
 test('menu shows three scale cards', async ({ page }) => {
   const errors = watchErrors(page);
   await page.goto('./');
-  const cards = page.locator('.menu .card');
-  await expect(cards).toHaveCount(3);
-  for (const { id } of SCALES) {
+  await expect(page.locator('.menu .card')).toHaveCount(3);
+  for (const id of SCALE_IDS) {
     await expect(page.locator(`.card[href="#/${id}"]`)).toBeVisible();
   }
   expect(errors).toEqual([]);
 });
 
-for (const scale of SCALES) {
-  test(`${scale.id}: card opens the view and the WASM solver loads`, async ({ page }) => {
+for (const id of SCALE_IDS) {
+  test(`${id}: card opens the view, the WASM solver loads and it renders`, async ({ page }) => {
     const errors = watchErrors(page);
-    const wasm = page.waitForResponse((res) => res.url().endsWith('.wasm') && res.ok());
-
     await page.goto('./');
-    await page.locator(`.card[href="#/${scale.id}"]`).click();
-    await expect(page).toHaveURL(new RegExp(`#/${scale.id}$`));
+    await page.locator(`.card[href="#/${id}"]`).click();
+    await expect(page).toHaveURL(new RegExp(`#/${id}$`));
+    await expectSolverReady(page, errors);
 
-    // The worker fetched and instantiated the module: the request succeeded and the
-    // worker answered `init` with `ready` (no "Failed to load solver" in the view).
-    await wasm;
     const view = page.locator('#view');
-    await expect(view).not.toBeEmpty();
-    await expect(view).not.toContainText(/failed to load/i);
-
-    if (scale.frames) {
+    if ((await view.locator('[data-placeholder]').count()) === 0) {
+      // A real view (#7 knp, #9 emi, #11 particles) must draw a frame into a canvas.
       const canvas = view.locator('canvas').first();
       await expect(canvas).toBeVisible();
-      const first = await canvas.screenshot();
-      await expect
-        .poll(async () => !(await canvas.screenshot()).equals(first), { timeout: 10_000 })
-        .toBe(true);
-    } else {
-      // Placeholder view: the status line reports the loaded solver core.
-      await expect(view.locator('[data-status]')).toContainText(/loaded/i, { timeout: 10_000 });
+      await expect.poll(() => isNonBlank(page, canvas), { message: 'canvas should not be blank', timeout: 10_000 }).toBe(true);
     }
 
     // Let any late async failure (worker errors, rejected promises) surface.
@@ -74,11 +91,12 @@ for (const scale of SCALES) {
   });
 }
 
-test('deep link opens a scale directly and back returns to the menu', async ({ page }) => {
+test('deep link boots a scale directly and the brand link returns to the menu', async ({ page }) => {
   const errors = watchErrors(page);
   await page.goto('./#/particles');
-  await expect(page.locator('#view')).not.toBeEmpty();
+  await expectSolverReady(page, errors);
   await page.locator('.brand').click();
   await expect(page.locator('.menu .card')).toHaveCount(3);
+  await expect(page.locator('html')).not.toHaveAttribute('data-solver');
   expect(errors).toEqual([]);
 });

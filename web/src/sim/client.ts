@@ -23,15 +23,20 @@ export class SimClient {
     return () => this.listeners.delete(listener);
   }
 
-  /** Load the WASM module; resolves with its version. */
+  /**
+   * Load the WASM module; resolves with its version. Mirrors the outcome on
+   * `<html data-solver="ready|error">`, which the browser smoke test (web/e2e) waits for.
+   */
   ready(): Promise<string> {
     return new Promise((resolve, reject) => {
       const off = this.on((m) => {
         if (m.type === 'ready') {
           off();
+          document.documentElement.dataset.solver = 'ready';
           resolve(m.version);
         } else if (m.type === 'error') {
           off();
+          document.documentElement.dataset.solver = 'error';
           reject(new Error(m.message));
         }
       });
@@ -40,6 +45,7 @@ export class SimClient {
   }
 
   terminate(): void {
+    delete document.documentElement.dataset.solver;
     this.listeners.clear();
     this.worker.terminate();
   }
