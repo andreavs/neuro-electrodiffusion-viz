@@ -6,4 +6,5 @@
 
 pub mod fem;
 pub mod mesh;
+pub mod meshfile;
 pub mod solver;
