@@ -1,0 +1,20 @@
+.ev { display: flex; flex-direction: column; gap: 16px; }
+.ev-head h2 { margin: 0 0 6px; font-size: 1.25rem; }
+.ev-head p { margin: 0; max-width: 75ch; line-height: 1.45; }
+.ev-main { display: grid; grid-template-columns: minmax(0, 1fr) 260px; gap: 16px; }
+.ev-stage {
+  position: relative; min-height: 460px; border-radius: 12px; overflow: hidden;
+  background: radial-gradient(circle at 50% 40%, #2a2e3a, #111216); border: 1px solid var(--border);
+}
+.ev-canvas { display: block; width: 100%; height: 100%; min-height: 460px; touch-action: none; }
+.ev-bars { position: absolute; top: 8px; right: 8px; display: flex; gap: 8px; opacity: 0.92; }
+.ev-note { position: absolute; left: 10px; bottom: 8px; margin: 0; font-size: 0.8rem; color: #d7dae3; pointer-events: none; }
+.ev-plots { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 16px; }
+.ev-plots figure { margin: 0; padding: 10px; background: var(--surface); border: 1px solid var(--border); border-radius: 12px; }
+.ev-plots figcaption { font-size: 0.85rem; color: var(--muted); margin-bottom: 4px; }
+.ev-plots canvas { display: block; width: 100%; height: 200px; color: var(--text); }
+@media (max-width: 860px) {
+  .ev-main, .ev-plots { grid-template-columns: 1fr; }
+  .ev-stage, .ev-canvas { min-height: 340px; }
+  .ev-bars { transform: scale(0.8); transform-origin: top right; }
+}
