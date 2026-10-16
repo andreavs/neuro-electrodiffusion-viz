@@ -1,4 +1,4 @@
-//! Parameters of the reduced neuron population (the stepper lands with #54) and the
+//! Parameters of a [`Population`](super::Population) and the
 //! calibration that makes the baseline a steady state.
 //!
 //! The calibration leaves the pump far from saturation at baseline (about 8 % of `P_max` in

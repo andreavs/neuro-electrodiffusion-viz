@@ -351,7 +351,8 @@ impl Mesh {
             return Err(MeshError::EmptyCell(c - 1));
         }
 
-        // One DOF per (vertex, adjacent subdomain), numbered vertex by vertex.
+        // One DOF per (vertex, adjacent subdomain), in reverse Cuthill-McKee vertex order
+        // (outer DOF, then inner).
         let mut uses_outer = vec![false; n_vertices];
         let mut vertex_cell = vec![0u16; n_vertices];
         for (tet, &tag) in tets.iter().zip(&tet_tag) {
@@ -373,7 +374,7 @@ impl Mesh {
         let mut vertex_inner = vec![NONE; n_vertices];
         let mut dof_vertex = Vec::new();
         let mut dof_tag = Vec::new();
-        for v in 0..n_vertices {
+        for v in cuthill_mckee(n_vertices, tets) {
             if uses_outer[v] {
                 vertex_outer[v] = dof_vertex.len() as u32;
                 dof_vertex.push(v as u32);
@@ -521,9 +522,77 @@ impl Mesh {
     }
 }
 
+/// Reverse Cuthill-McKee order of the vertices of `tets` (each component from a
+/// minimum-degree vertex), so neighbouring DOFs sit close in memory.
+fn cuthill_mckee(n: usize, tets: &[[u32; 4]]) -> Vec<usize> {
+    let mut adj: Vec<Vec<u32>> = vec![Vec::new(); n];
+    for tet in tets {
+        for a in 0..4 {
+            for b in 0..4 {
+                if a != b {
+                    adj[tet[a] as usize].push(tet[b]);
+                }
+            }
+        }
+    }
+    reverse_cuthill_mckee(adj)
+}
+
+/// Reverse Cuthill-McKee order of a graph given as adjacency lists (duplicates allowed).
+pub fn reverse_cuthill_mckee(mut adj: Vec<Vec<u32>>) -> Vec<usize> {
+    let n = adj.len();
+    for l in &mut adj {
+        l.sort_unstable();
+        l.dedup();
+    }
+    let mut by_degree: Vec<usize> = (0..n).collect();
+    by_degree.sort_by_key(|&v| adj[v].len());
+    let mut seen = vec![false; n];
+    let mut order = Vec::with_capacity(n);
+    for &start in &by_degree {
+        if seen[start] {
+            continue;
+        }
+        seen[start] = true;
+        let mut head = order.len();
+        order.push(start);
+        while head < order.len() {
+            let v = order[head];
+            head += 1;
+            let mut next: Vec<usize> = adj[v]
+                .iter()
+                .map(|&u| u as usize)
+                .filter(|&u| !seen[u])
+                .collect();
+            next.sort_by_key(|&u| adj[u].len());
+            for u in next {
+                seen[u] = true;
+                order.push(u);
+            }
+        }
+    }
+    order.reverse();
+    order
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn cuthill_mckee_is_a_permutation_with_disconnected_parts() {
+        // Two disjoint tets and an isolated vertex 8.
+        let order = cuthill_mckee(9, &[[0, 2, 4, 6], [1, 3, 5, 7]]);
+        let mut sorted = order.clone();
+        sorted.sort_unstable();
+        assert_eq!(sorted, (0..9).collect::<Vec<_>>());
+        // Each tet's vertices stay together.
+        let pos = |v: usize| order.iter().position(|&u| u == v).unwrap();
+        for tet in [[0, 2, 4, 6], [1, 3, 5, 7]] {
+            let p: Vec<usize> = tet.iter().map(|&v| pos(v)).collect();
+            assert_eq!(p.iter().max().unwrap() - p.iter().min().unwrap(), 3);
+        }
+    }
 
     fn single_cell() -> MeshSpec {
         MeshSpec {
