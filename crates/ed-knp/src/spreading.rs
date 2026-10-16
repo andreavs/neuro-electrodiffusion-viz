@@ -4,9 +4,10 @@
 //! Each [`SdTissue::step`]: every compartment of the [`Population`] reads the Na⁺, K⁺ and X⁻
 //! concentrations of the grid cell it sits in, the population advances over the KNP step,
 //! and its mean currents become the KNP point sources. There are no synapses between the
-//! cells: the only interaction is through the extracellular concentrations (and the small
-//! extracellular potential). Optional glial buffering takes up K⁺ together with X⁻ (as KCl,
-//! so it carries no current) at a rate proportional to the excess over baseline.
+//! cells: the only interaction is through the extracellular concentrations (the membranes do
+//! not see the extracellular potential). Optional glial buffering takes up K⁺ together with
+//! X⁻ (as KCl, so it carries no current) at a rate proportional to the excess over baseline;
+//! it never releases K⁺ where [K⁺]e is below baseline.
 //!
 //! Some neurons near the centre can be driven by an extra Na⁺ conductance on their soma
 //! ([`SdTissue::set_drive`]). The question is whether that local K⁺ release can push the
@@ -77,6 +78,15 @@ pub struct SdTissue {
 impl SdTissue {
     pub fn new(cfg: &SdConfig) -> Self {
         assert!(cfg.buffering >= 0.0, "buffering must be ≥ 0");
+        let names: Vec<_> = cfg.knp.species.iter().map(|s| s.name).collect();
+        assert!(
+            names.len() > X && names[NA] == "Na+" && names[K] == "K+" && cfg.knp.species[X].z == -1,
+            "the tissue must carry Na⁺, K⁺ and an anion first, got {names:?}"
+        );
+        assert_eq!(
+            cfg.knp.temperature, cfg.population.temperature,
+            "tissue and neurons must share one temperature"
+        );
         let knp = KnpSolver::new(&cfg.knp);
         let size = cfg.knp.size;
         let off = cfg.dendrite_offset;
@@ -97,7 +107,8 @@ impl SdTissue {
                 lo + (hi - lo) * uniform()
             });
             positions.push(soma);
-            positions.push([0, 1, 2].map(|a| soma[a] + off[a]));
+            // Rounding must not put the dendrite exactly on the far wall.
+            positions.push([0, 1, 2].map(|a| (soma[a] + off[a]).min(size[a] * (1.0 - 1e-12))));
         }
         let cells = positions
             .iter()
@@ -184,9 +195,13 @@ impl Simulation for SdTissue {
                 s.add_capacitive_current_in_cell(cell, p.i_cap()[c]);
             }
             if self.buffering > 0.0 {
-                let (k0, rate) = (self.baseline[1], self.buffering * self.cell_volume);
+                // The exact relaxation over one step, so that the explicit source cannot
+                // overshoot the baseline however large the rate.
+                let dt = s.dt();
+                let rate = (1.0 - (-self.buffering * dt).exp()) / dt * self.cell_volume;
+                let k0 = self.baseline[1];
                 for cell in 0..s.grid().len() {
-                    let uptake = -rate * (s.concentration(K)[cell] - k0);
+                    let uptake = -rate * (s.concentration(K)[cell] - k0).max(0.0);
                     s.add_ion_source_in_cell(cell, K, uptake);
                     s.add_ion_source_in_cell(cell, X, uptake);
                 }
@@ -219,18 +234,22 @@ mod tests {
         cfg
     }
 
-    /// Total amount of K⁺ in the extracellular space and the cells, mM·µm³.
-    fn potassium(t: &SdTissue, cfg: &SdConfig) -> f64 {
+    /// Total amount of one species in the extracellular space and the cells, mM·µm³
+    /// (X⁻ outside pairs with Cl⁻ inside).
+    fn amount(t: &SdTissue, cfg: &SdConfig, ion: usize) -> f64 {
         let h = t.knp.grid().h;
         let ecs: f64 =
-            t.knp.concentration(K).iter().sum::<f64>() * h[0] * h[1] * h[2] * cfg.knp.porosity;
+            t.knp.concentration(ion).iter().sum::<f64>() * h[0] * h[1] * h[2] * cfg.knp.porosity;
         let p = &cfg.population;
-        let ics: f64 = t
-            .pop
-            .k_i()
+        let inside = match ion {
+            NA => t.pop.na_i(),
+            K => t.pop.k_i(),
+            _ => t.pop.cl_i(),
+        };
+        let ics: f64 = inside
             .iter()
             .enumerate()
-            .map(|(c, k)| k * p.volume[c % 2])
+            .map(|(c, x)| x * p.volume[c % 2])
             .sum();
         ecs + ics
     }
@@ -240,8 +259,12 @@ mod tests {
         let cfg = small(0.25);
         let mut t = SdTissue::new(&cfg);
         t.step(250);
-        let k = t.knp.concentration(K);
-        assert!(k.iter().all(|&c| (c - 3.0).abs() < 1e-6));
+        let k0 = cfg.knp.baseline[K];
+        assert!(t
+            .knp
+            .concentration(K)
+            .iter()
+            .all(|&c| (c - k0).abs() < 1e-6));
         assert_eq!(t.depolarised_fraction(), 0.0);
         assert!(t
             .positions()
@@ -250,22 +273,65 @@ mod tests {
     }
 
     #[test]
-    fn potassium_is_conserved_between_cells_and_tissue() {
+    fn ions_are_conserved_between_cells_and_tissue() {
         let cfg = small(0.25);
         let mut t = SdTissue::new(&cfg);
         assert_eq!(t.set_drive([100.0, 100.0, 50.0], 2, 20.0).len(), 2);
-        let k0 = potassium(&t, &cfg);
+        let before = [NA, K, X].map(|ion| amount(&t, &cfg, ion));
         t.step(100);
         assert!(
             t.knp.concentration(K).iter().any(|&c| c > 3.5),
             "the driven cells release K⁺"
         );
-        let k1 = potassium(&t, &cfg);
-        assert!((k1 - k0).abs() < 1e-9 * k0, "{k0} → {k1}");
-        // Buffering removes K⁺ from the system.
+        for (ion, a0) in [NA, K, X].into_iter().zip(before) {
+            let a1 = amount(&t, &cfg, ion);
+            assert!((a1 - a0).abs() < 1e-9 * a0, "species {ion}: {a0} → {a1}");
+        }
+        // Buffering removes K⁺ and X⁻ in equal amounts.
+        let (k1, x1) = (amount(&t, &cfg, K), amount(&t, &cfg, X));
         t.set_buffering(1e-3);
         t.step(100);
-        assert!(potassium(&t, &cfg) < k1);
+        let (dk, dx) = (k1 - amount(&t, &cfg, K), x1 - amount(&t, &cfg, X));
+        assert!(dk > 0.0 && (dk - dx).abs() < 1e-9 * k1, "{dk} vs {dx}");
+    }
+
+    #[test]
+    fn strong_buffering_stays_stable() {
+        let cfg = small(0.25);
+        let mut t = SdTissue::new(&cfg);
+        t.set_drive([100.0, 100.0, 50.0], 2, 20.0);
+        t.set_buffering(1.0); // 4 per step: an explicit uptake would diverge.
+        t.step(200);
+        let k0 = cfg.knp.baseline[K];
+        let k = t.knp.concentration(K);
+        let (lo, hi) = k
+            .iter()
+            .fold((f64::MAX, f64::MIN), |(l, h), &c| (l.min(c), h.max(c)));
+        assert!(lo.is_finite() && hi.is_finite());
+        assert!(lo > k0 - 0.5 && hi < k0 + 0.5, "[K⁺]e within {lo}–{hi}");
+    }
+
+    #[test]
+    fn drive_moves_to_the_nearest_somata() {
+        let mut t = SdTissue::new(&small(0.0));
+        let near = |t: &SdTissue, centre: [f64; 3]| {
+            let d = |i: usize| {
+                let p = t.positions()[2 * i];
+                (0..3).map(|a| (p[a] - centre[a]).powi(2)).sum::<f64>()
+            };
+            let far = t.driven().iter().map(|&i| d(i)).fold(0.0, f64::max);
+            (0..t.pop.len()).filter(|&i| d(i) <= far).count()
+        };
+        t.set_drive([20.0, 20.0, 20.0], 5, 20.0);
+        assert_eq!(near(&t, [20.0, 20.0, 20.0]), 5);
+        let old = t.driven().to_vec();
+        t.set_drive([180.0, 180.0, 50.0], 3, 20.0);
+        assert_eq!(near(&t, [180.0, 180.0, 50.0]), 3);
+        assert!(old.iter().all(|i| !t.driven().contains(i)));
+        // The old ones are released: their somata recover while the new ones depolarise.
+        t.step(100);
+        let v = t.pop.v();
+        assert!(old.iter().all(|&i| v[2 * i] < -55.0));
     }
 
     #[test]
