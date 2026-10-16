@@ -267,6 +267,34 @@ export class ControlPanel {
     this.playButton.textContent = running ? 'Pause' : 'Play';
   }
 
+  /**
+   * Sets several parameters at once, as if the user had changed the controls, and sends the
+   * changed ones to the worker in one message. Unknown keys and buttons are ignored.
+   * Returns whether anything changed.
+   */
+  setValues(values: Params): boolean {
+    const changed: Params = {};
+    for (const [key, raw] of Object.entries(values)) {
+      const spec = this.specs.get(key);
+      if (!spec || spec.kind === 'button' || key === SPEED_SPEC.key) continue;
+      // Clamped and checked against the options, as if typed into the control.
+      const value = readControl(spec, { value: String(raw), checked: raw === true })!;
+      if (this.values[key] === value) continue;
+      this.values[key] = value;
+      changed[key] = value;
+      const input = [...this.el.querySelectorAll<HTMLInputElement>('[data-key]')].find((i) => i.dataset.key === key);
+      if (input && spec.kind === 'toggle') input.checked = value === true;
+      else if (input) input.value = String(value);
+      if (spec.kind === 'number') {
+        const out = [...this.el.querySelectorAll<HTMLElement>('[data-out]')].find((o) => o.dataset.out === key);
+        if (out) out.textContent = formatNumber(value as number, spec.step, spec.unit);
+      }
+    }
+    if (Object.keys(changed).length === 0) return false;
+    this.client.setParams(changed);
+    return true;
+  }
+
   updateStats(s: StatsView): void {
     this.stat.time.textContent = formatSimTime(s.simTimeMs);
     this.stat.steps.textContent = formatRate(s.stepsPerSec);
