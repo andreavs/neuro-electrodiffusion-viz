@@ -22,6 +22,7 @@ import { createAboutPanel } from '../../ui/about';
 import { ControlPanel } from '../../ui/controls';
 import { startRenderLoop } from '../../ui/renderLoop';
 import { getScale, type ScaleView } from '../registry';
+import { MESH_GEOMETRIES, fetchMeshMeta, type MeshMeta } from './meshes';
 import { gather, membraneMesh, sliceAxisOf, sliceMesh, slicePlane, stimulatedCells, type TriMesh } from './geometry';
 import { AXON_START, EMI_PARAMS, SLICE_FIELDS } from './params';
 import './view.css';
@@ -31,6 +32,7 @@ const PHI_M_RANGE = { min: -80, max: 40 };
 /** Simulated time shown in the trace plots, ms. */
 const TRACE_WINDOW_MS = 30;
 const STIM_COLORS = ['#e4572e', '#f3a712', '#d1495b', '#ff7f51'];
+const PROBE_COLORS = ['#e4572e', '#4cc9f0', '#7bd389', '#f3a712', '#b388eb', '#ef476f'];
 const OTHER_COLORS = ['#4cc9f0', '#7bd389', '#b388eb', '#90a4ae', '#3a86ff', '#ffd166', '#06d6a0', '#ef476f'];
 
 const FIELDS: Record<string, { label: string; units: string; colormap: Colormap }> = {
@@ -68,11 +70,13 @@ export function createEmiView(): ScaleView {
         <section class="ev">
           <header class="ev-head">
             <h2>${info.title}</h2>
-            <p class="muted">A bundle of unmyelinated axons, 200 µm long and 0.2 µm wide, with the extracellular space
-              between them resolved by finite elements (Publication 2 of the thesis). A synapse at the left end of the
-              stimulated axon starts an action potential. The axon surfaces show the membrane potential; the slice shows
-              the potential or an ion concentration around them, so you can see the extracellular signal and K⁺ release
-              that reach the neighbouring axons (ephaptic coupling).</p>
+            <p class="muted">Cells with their real shape, and the extracellular space around them, resolved by finite
+              elements (Publication 2 of the thesis). Pick a bundle of unmyelinated axons, 200 µm long and 0.2 µm wide,
+              or a realistic cell: a stylised neuron, a spiny dendrite, or the soma and proximal dendrites of a
+              reconstructed pyramidal cell. A synapse starts an action potential. The cell surfaces show the membrane
+              potential; the slice shows the potential or an ion concentration around them. In the bundle you can see
+              the extracellular signal and K⁺ release that reach the neighbouring axons (ephaptic coupling).</p>
+            <p class="muted" data-out="geometry"></p>
           </header>
           <div class="ev-main">
             <div class="ev-stage">
@@ -83,12 +87,13 @@ export function createEmiView(): ScaleView {
             <aside class="ev-side"></aside>
           </div>
           <div class="ev-plots">
-            <figure><figcaption>Membrane potential at the probe, stimulated axons (by number)</figcaption><canvas data-plot="stim"></canvas></figure>
+            <figure><figcaption data-caption="stim"></figcaption><canvas data-plot="stim"></canvas></figure>
             <figure><figcaption>Membrane potential at the probe, other axons by number (note the small scale)</figcaption><canvas data-plot="other"></canvas></figure>
           </div>
         </section>`;
       const q = <T extends HTMLElement>(sel: string) => root.querySelector<T>(sel)!;
       const note = q('[data-out="note"]');
+      const geometryText = q('[data-out="geometry"]');
       q('.ev-head').append(createAboutPanel('emi'));
       const panel = new ControlPanel(q('.ev-side'), client, EMI_PARAMS);
 
@@ -135,6 +140,11 @@ export function createEmiView(): ScaleView {
       let corners: Float32Array = new Float32Array();
       let tags: Float32Array = new Float32Array();
       let extent = new THREE.Vector3(1, 1, 1);
+      let lo = new THREE.Vector3();
+      // A mesh geometry's JSON (probe labels and sites) once loaded; null for the bundle.
+      let isBundle = true;
+      let meta: MeshMeta | null = null;
+      let probeMarks: THREE.Group | null = null;
       let probeX = NaN;
       // Trace routing: plot and trace index per cell (1-based), rebuilt when the stimulus set changes.
       let traceKey = '';
@@ -150,7 +160,9 @@ export function createEmiView(): ScaleView {
 
       const rebuildMeshes = () => {
         const axis = sliceAxisOf(corners);
-        membrane = replace(membrane, membraneMesh(nodes, tris, axis, slicePlane(corners, axis)), membraneMap());
+        // The bundle hides the axon surfaces in front of the slice; a cell is shown whole.
+        const cut = isBundle ? slicePlane(corners, axis) : Infinity;
+        membrane = replace(membrane, membraneMesh(nodes, tris, axis, cut), membraneMap());
         setRange(membrane.field, membraneBar.range);
         membrane.field.setGlow(glow());
         slice = replace(slice, sliceMesh(corners, tags, inside), sliceMap(sliceField));
@@ -158,6 +170,16 @@ export function createEmiView(): ScaleView {
 
       let framed = '';
       const placeBundle = () => {
+        if (!isBundle) {
+          // Realistic cells are drawn to scale, centred.
+          bundle.scale.set(1, 1, 1);
+          bundle.position.copy(lo).addScaledVector(extent, 0.5).negate();
+          const key = `mesh:${extent.x}:${extent.y}:${extent.z}`;
+          if (key !== framed) view.frameBox(extent.clone());
+          framed = key;
+          note.textContent = '';
+          return;
+        }
         const sx = (3 * extent.y) / extent.x;
         bundle.scale.set(sx, 1, 1);
         bundle.position.set((-extent.x * sx) / 2, -extent.y / 2, -extent.z / 2);
@@ -168,11 +190,31 @@ export function createEmiView(): ScaleView {
         note.textContent = `Lengths along the axons are drawn ${Math.round(1 / sx)}× shorter than across them.`;
       };
 
-      const placeProbe = (x: number) => {
-        if (probe) {
-          disposeObject(probe);
-          bundle.remove(probe);
+      const removeProbes = () => {
+        for (const o of [probe, probeMarks]) {
+          if (!o) continue;
+          disposeObject(o);
+          bundle.remove(o);
         }
+        probe = null;
+        probeMarks = null;
+      };
+
+      /** Wire spheres where a mesh geometry's probes average φ_M. */
+      const markProbes = (m: MeshMeta) => {
+        removeProbes();
+        probeMarks = new THREE.Group();
+        const material = new THREE.MeshBasicMaterial({ color: 0xffffff, wireframe: true, transparent: true, opacity: 0.35 });
+        for (const p of m.probes) {
+          const ball = new THREE.Mesh(new THREE.SphereGeometry(p.radius, 12, 8), material);
+          ball.position.set(...p.centre);
+          probeMarks.add(ball);
+        }
+        bundle.add(probeMarks);
+      };
+
+      const placeProbe = (x: number) => {
+        removeProbes();
         const [y, z] = [extent.y, extent.z];
         const pts = [
           [0, 0],
@@ -187,19 +229,25 @@ export function createEmiView(): ScaleView {
         bundle.add(probe);
       };
 
-      const rebuildPlots = (nCells: number, stimulated: Set<number>) => {
+      /** Plots for traces `1..n`: the bundle splits stimulated axons from the others. */
+      const rebuildPlots = (n: number, stimulated: Set<number>) => {
         for (const p of plots) p.dispose();
         const stim: number[] = [];
         const other: number[] = [];
-        for (let c = 1; c <= nCells; c++) (stimulated.has(c) ? stim : other).push(c);
+        for (let c = 1; c <= n; c++) (!isBundle || stimulated.has(c) ? stim : other).push(c);
+        const name = (c: number) => (isBundle ? `${c}` : (meta?.probes[c - 1]?.label ?? `${c}`));
+        q('[data-caption="stim"]').textContent = isBundle
+          ? 'Membrane potential at the probe, stimulated axons (by number)'
+          : 'Membrane potential at the probes';
+        q('[data-plot="other"]').closest('figure')!.hidden = !isBundle;
         const make = (sel: string, cells: number[], colors: string[]) =>
           new TimeSeriesPlot(q(`[data-plot="${sel}"]`), {
-            traces: cells.map((c, i) => ({ name: `${c}`, color: colors[i % colors.length]! })),
+            traces: cells.map((c, i) => ({ name: name(c), color: colors[i % colors.length]! })),
             windowMs: TRACE_WINDOW_MS,
             xLabel: 'time (ms)',
             yLabel: 'φ_M (mV)',
           });
-        plots = [make('stim', stim, STIM_COLORS), make('other', other, OTHER_COLORS)];
+        plots = [make('stim', stim, isBundle ? STIM_COLORS : PROBE_COLORS), make('other', other, OTHER_COLORS)];
         route = [];
         stim.forEach((c, i) => (route[c] = [0, i]));
         other.forEach((c, i) => (route[c] = [1, i]));
@@ -210,12 +258,39 @@ export function createEmiView(): ScaleView {
         const s = frame.stats ?? {};
         const params = panel.params();
         let meshesStale = false;
+        if (s.loading) {
+          note.textContent = 'Loading the mesh…';
+          geometryText.textContent = '';
+          removeProbes();
+          return;
+        }
 
         if (s.geometry !== geometryId && f.nodes && f.tris) {
           geometryId = s.geometry!;
           nodes = f.nodes;
           tris = f.tris;
+          lo = new THREE.Vector3(s.loX, s.loY, s.loZ);
           extent = new THREE.Vector3(s.hiX! - s.loX!, s.hiY! - s.loY!, s.hiZ! - s.loZ!);
+          const mesh = MESH_GEOMETRIES[s.geometryIndex ?? -1];
+          isBundle = !mesh;
+          meta = null;
+          geometryText.textContent = '';
+          removeProbes();
+          if (mesh) {
+            const id = geometryId;
+            fetchMeshMeta(mesh.value).then(
+              (m) => {
+                if (disposed || id !== geometryId) return;
+                meta = m;
+                geometryText.textContent = m.description;
+                markProbes(m);
+                traceKey = ''; // relabel the traces
+              },
+              (err: unknown) => {
+                if (!disposed && id === geometryId) note.textContent = String(err);
+              },
+            );
+          }
           placeBundle();
           probeX = NaN;
           traceKey = '';
@@ -248,16 +323,17 @@ export function createEmiView(): ScaleView {
           sliceBar!.resetAuto();
         }
 
-        if (s.probeX !== probeX) {
+        if (isBundle && s.probeX !== probeX) {
           probeX = s.probeX!;
           placeProbe(probeX);
           for (const p of plots) p.clear();
         }
         const nCells = s.nCells ?? 0;
+        const nProbes = s.nProbes ?? nCells;
         const key = `${geometryId}:${s.stimulated}`;
         if (key !== traceKey) {
           traceKey = key;
-          rebuildPlots(nCells, stimulatedCells(s.stimulated ?? 0, nCells));
+          rebuildPlots(nProbes, stimulatedCells(s.stimulated ?? 0, nCells));
         }
 
         membrane!.field.update(gather(f.phiM!, membrane!.mesh.source, membrane!.values));
@@ -265,7 +341,7 @@ export function createEmiView(): ScaleView {
         slice!.field.update(sv);
 
         const tr = f.traces!;
-        const width = 1 + nCells;
+        const width = 1 + nProbes;
         for (let r = 0; r + width <= tr.length; r += width) {
           const t = tr[r]!;
           // A reset or rebuild restarts the clock.
@@ -274,7 +350,7 @@ export function createEmiView(): ScaleView {
             sliceBar!.resetAuto();
           }
           lastTraceT = t;
-          for (let c = 1; c <= nCells; c++) {
+          for (let c = 1; c <= nProbes; c++) {
             const [p, i] = route[c]!;
             plots[p]!.push(i, t, tr[r + c]!);
           }
@@ -307,6 +383,12 @@ export function createEmiView(): ScaleView {
       }
       if (disposed) return;
       startRenderLoop(client, { draw, stats: panel });
+      // The worker stops on a solver error (e.g. a mesh that failed to load): say why.
+      client.addDisposer(
+        client.on((m) => {
+          if (m.type === 'error') note.textContent = m.message;
+        }),
+      );
       // Re-register the scene's rAF after the frame consumer's, so each animation frame
       // renders the values it just received.
       view.start();

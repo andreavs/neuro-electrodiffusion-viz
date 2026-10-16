@@ -3,8 +3,14 @@ import { DEFAULT_BUDGET_MS } from '../sim/loop';
 import type { ParamValue, Params } from '../sim/protocol';
 import './controls.css';
 
+/** Shows a control only while the select `key` has one of `values`. */
+export interface ShowWhen {
+  key: string;
+  values: readonly string[];
+}
+
 /** One control in a scale's parameter schema. */
-export type ParamSpec =
+export type ParamSpec = (
   | {
       kind: 'number';
       key: string;
@@ -26,7 +32,8 @@ export type ParamSpec =
     }
   | { kind: 'toggle'; key: string; label: string; default: boolean; help?: string }
   /** A one-shot action (sent as an `action` message, not a parameter). */
-  | { kind: 'button'; key: string; label: string; help?: string };
+  | { kind: 'button'; key: string; label: string; help?: string }
+) & { showWhen?: ShowWhen };
 
 export type ParamSchema = readonly ParamSpec[];
 
@@ -35,6 +42,11 @@ export function defaultParams(schema: ParamSchema): Params {
   const out: Params = {};
   for (const s of schema) if (s.kind !== 'button') out[s.key] = s.default;
   return out;
+}
+
+/** Whether `spec` is shown for the current `values`. */
+export function isShown(spec: ParamSpec, values: Params): boolean {
+  return !spec.showWhen || spec.showWhen.values.includes(String(values[spec.showWhen.key]));
 }
 
 const escapeMap: Record<string, string> = {
@@ -222,6 +234,7 @@ export class ControlPanel {
     this.el.className = 'ctl-panel';
     this.el.innerHTML = renderPanel(schema, this.values, this.running);
     parent.append(this.el);
+    this.updateVisibility();
 
     const q = (sel: string) => this.el.querySelector<HTMLElement>(sel)!;
     this.stat = {
@@ -291,6 +304,7 @@ export class ControlPanel {
       }
     }
     if (Object.keys(changed).length === 0) return false;
+    this.updateVisibility();
     this.client.setParams(changed);
     return true;
   }
@@ -326,9 +340,18 @@ export class ControlPanel {
       );
       if (out) out.textContent = formatNumber(value as number, spec.step, spec.unit);
     }
+    this.updateVisibility();
     if (spec.key === SPEED_SPEC.key) this.client.setBudget(speedToBudgetMs(value as number));
     else this.client.setParams({ [spec.key]: value });
   };
+
+  /** Hides the controls whose `showWhen` does not hold. */
+  private updateVisibility(): void {
+    for (const input of this.el.querySelectorAll<HTMLElement>('[data-key], [data-action]')) {
+      const spec = this.specs.get(input.dataset.key ?? input.dataset.action ?? '');
+      if (spec) (input.closest<HTMLElement>('.ctl') ?? input).hidden = !isShown(spec, this.values);
+    }
+  }
 
   private readonly onClick = (ev: Event): void => {
     const button = (ev.target as HTMLElement).closest<HTMLButtonElement>('button');

@@ -1,4 +1,4 @@
-import { fetchMesh, siteKey, type MeshGeometry, type MeshLoader } from '../../scales/emi/meshes';
+import { MESH_GEOMETRIES, fetchMesh, siteKey, type MeshGeometry, type MeshLoader } from '../../scales/emi/meshes';
 import { EMI_PARAMS, SLICE_FIELDS, sliceAxis } from '../../scales/emi/params';
 import { defaultParams } from '../../ui/controls';
 import { EmiSim } from '../../wasm/pkg/ed_wasm.js';
@@ -64,7 +64,8 @@ export interface PackState {
  * Static geometry is included only while `state` says it has not been sent.
  */
 export function packFrame(sim: EmiWasm, params: Params, state: PackState, steps: number): SolverFrame {
-  const axis = sliceAxis(String(params.slice));
+  const geometry = String(params.geometry ?? 'bundle');
+  const axis = sliceAxis(String(params.slice), geometry);
   const frac = Number(params.slicePos);
   const nCells = sim.n_cells();
   const nProbes = sim.n_probes();
@@ -107,6 +108,8 @@ export function packFrame(sim: EmiWasm, params: Params, state: PackState, steps:
       slice: state.slice,
       nCells,
       nProbes,
+      // Which geometry this frame shows: an index into MESH_GEOMETRIES, or -1 for the bundle.
+      geometryIndex: MESH_GEOMETRIES.findIndex((g) => g.value === geometry),
       probeX: sim.probe_x(),
       // Which field `slice` holds (index into SLICE_FIELDS), so the view never colours it with another field's bar.
       sliceField: SLICE_FIELDS.indexOf(String(params.field)),

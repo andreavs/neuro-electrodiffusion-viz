@@ -1,12 +1,36 @@
-import type { ParamSchema } from '../../ui/controls';
+import type { ParamSchema, ParamSpec } from '../../ui/controls';
+import { MESH_GEOMETRIES, siteKey } from './meshes';
 
 /** Length of the axons, µm (fixed by the bindings). */
 export const AXON_LENGTH = 200;
 /** x where the axons start (extracellular space before their ends), µm. */
 export const AXON_START = 5;
 
+const BUNDLE = { key: 'geometry', values: ['bundle'] };
+
+/** One stimulus-site select per mesh geometry, shown while it is chosen. */
+const SITES = MESH_GEOMETRIES.map(
+  (g): ParamSpec => ({
+    kind: 'select',
+    key: siteKey(g.value),
+    label: 'Stimulus site',
+    options: g.sites,
+    default: g.sites[0].value,
+    help: 'Where the synapse opens',
+    showWhen: { key: 'geometry', values: [g.value] },
+  }),
+);
+
 /** Controls of the cell-scale simulation; read by both the view and the worker solver. */
 export const EMI_PARAMS = [
+  {
+    kind: 'select',
+    key: 'geometry',
+    label: 'Geometry',
+    options: [{ value: 'bundle', label: 'Axon bundle' }, ...MESH_GEOMETRIES],
+    default: 'bundle',
+    help: 'An idealised bundle of axons, or a realistic cell meshed with tetrahedra',
+  },
   {
     kind: 'select',
     key: 'axons',
@@ -17,6 +41,7 @@ export const EMI_PARAMS = [
       { value: '4', label: '16 (4 × 4)' },
     ],
     default: '3',
+    showWhen: BUNDLE,
   },
   {
     kind: 'number',
@@ -28,6 +53,7 @@ export const EMI_PARAMS = [
     default: 0.1,
     unit: 'µm',
     help: 'Extracellular gap between neighbouring axons (the axons are 0.2 µm wide)',
+    showWhen: BUNDLE,
   },
   {
     kind: 'select',
@@ -40,7 +66,9 @@ export const EMI_PARAMS = [
     ],
     default: 'centre',
     help: 'Which axons get a synaptic input at their left end',
+    showWhen: BUNDLE,
   },
+  ...SITES,
   {
     kind: 'number',
     key: 'period',
@@ -70,8 +98,8 @@ export const EMI_PARAMS = [
     key: 'slice',
     label: 'Slice',
     options: [
-      { value: 'along', label: 'Along the axons' },
-      { value: 'across', label: 'Across the bundle' },
+      { value: 'along', label: 'Lengthwise' },
+      { value: 'across', label: 'Cross-section' },
     ],
     default: 'along',
   },
@@ -83,9 +111,9 @@ export const EMI_PARAMS = [
     max: 1,
     step: 0.01,
     default: 0.5,
-    help: 'Height of the lengthwise slice, or position of the cross-section along the axons',
+    help: 'Where the slice cuts the domain, from one side to the other',
   },
-  { kind: 'toggle', key: 'inside', label: 'Show the slice inside the axons', default: false },
+  { kind: 'toggle', key: 'inside', label: 'Show the slice inside the cells', default: false },
   {
     kind: 'number',
     key: 'probe',
@@ -96,6 +124,7 @@ export const EMI_PARAMS = [
     default: 150,
     unit: 'µm',
     help: 'Where along the axons the membrane potential traces are recorded',
+    showWhen: BUNDLE,
   },
   {
     kind: 'number',
@@ -120,9 +149,13 @@ export const EMI_PARAMS = [
   },
 ] as const satisfies ParamSchema;
 
-/** Slice normal axis: z for the lengthwise slice, x for the cross-section. */
-export function sliceAxis(slice: string): number {
-  return slice === 'across' ? 0 : 2;
+/**
+ * Slice normal axis. The bundle runs along x: lengthwise is a z slice, the cross-section an
+ * x slice. The cells stand along z: lengthwise is a y slice, the cross-section a z slice.
+ */
+export function sliceAxis(slice: string, geometry = 'bundle'): number {
+  if (geometry === 'bundle') return slice === 'across' ? 0 : 2;
+  return slice === 'across' ? 2 : 1;
 }
 
 /** Slice fields in the order the frame's `sliceField` stat refers to. */
