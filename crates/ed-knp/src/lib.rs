@@ -34,6 +34,7 @@ use ed_core::Simulation;
 mod diffusion;
 mod electroneutral;
 pub mod fv;
+pub mod hay;
 pub mod neuron;
 pub mod population;
 mod sources;

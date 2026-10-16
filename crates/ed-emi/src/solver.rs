@@ -235,9 +235,7 @@ impl EmiSolver {
     /// `x_lo ≤ x ≤ x_hi`.
     pub fn stimulate(&mut self, cell: u16, x_lo: f64, x_hi: f64, g: f64, t0: f64) {
         for (p, m) in self.mesh.membrane.iter().enumerate() {
-            let x = self
-                .mesh
-                .vertex_position(self.mesh.dof_vertex[m.inner as usize] as usize)[0];
+            let x = self.mesh.dof_position(m.inner as usize)[0];
             if m.cell == cell && x >= x_lo && x <= x_hi {
                 self.patches.set_synapse(p, g, t0);
             }
