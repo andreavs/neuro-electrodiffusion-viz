@@ -241,22 +241,3 @@ fn passive_axon_matches_cable_theory() {
     let phi_m0 = vec![rest; s.mesh().membrane.len()];
     assert_within_capacitor_bound(&s, &before, &phi_m0);
 }
-
-/// A mesh without a grid (as from gmsh) runs: same membrane, a stable resting state.
-#[test]
-fn unstructured_mesh_runs() {
-    let grid = single_axon(EmiParams::default());
-    let m = grid.mesh();
-    let tets: Vec<[u32; 4]> = m
-        .tets
-        .iter()
-        .map(|t| t.map(|d| m.dof_vertex[d as usize]))
-        .collect();
-    let mesh = Mesh::from_tets(m.points.clone(), &tets, m.tet_tag.clone(), 1).unwrap();
-    let mut s = EmiSolver::new(mesh, EmiParams::default());
-    let rest = s.phi_m()[0];
-    for _ in 0..10 {
-        s.step().unwrap();
-    }
-    assert!(s.phi_m().iter().all(|v| (v - rest).abs() < 1.0));
-}

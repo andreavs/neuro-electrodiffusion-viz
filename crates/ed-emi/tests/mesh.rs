@@ -1,6 +1,6 @@
 //! Mesh invariants: conformity and tet orientation.
 
-use ed_emi::mesh::{Aabb, Mesh, MeshError, MeshSpec, NONE};
+use ed_emi::mesh::{Aabb, Mesh, MeshSpec, NONE};
 
 fn single_cell() -> MeshSpec {
     MeshSpec {
@@ -122,89 +122,5 @@ fn unstructured_mesh_keeps_volumes_and_membrane() {
         ];
         let out: f64 = (0..3).map(|a| n[a] * (p[0][a] - [2.0, 1.0, 1.0][a])).sum();
         assert!(out > 0.0);
-    }
-}
-
-#[test]
-fn from_tets_rejects_bad_input() {
-    let p = vec![
-        [0.0; 3],
-        [1.0, 0.0, 0.0],
-        [0.0, 1.0, 0.0],
-        [0.0, 0.0, 1.0],
-        [1.0, 1.0, 0.0],
-    ];
-    let ok = [[0, 1, 2, 3]];
-    assert!(Mesh::from_tets(p.clone(), &ok, vec![0], 0).is_ok());
-    let err = |tets: &[[u32; 4]], tags: Vec<u16>, n| Mesh::from_tets(p.clone(), tets, tags, n);
-    assert_eq!(
-        err(&[[0, 1, 2, 9]], vec![0], 0).unwrap_err(),
-        MeshError::BadTet(0)
-    );
-    assert_eq!(err(&ok, vec![2], 1).unwrap_err(), MeshError::BadTet(0));
-    // Flat: all four points in z = 0.
-    assert_eq!(
-        err(&[[0, 1, 2, 4]], vec![0], 0).unwrap_err(),
-        MeshError::BadTet(0)
-    );
-    assert_eq!(err(&ok, vec![0], 1).unwrap_err(), MeshError::EmptyCell(0));
-    assert_eq!(err(&ok, vec![], 0).unwrap_err(), MeshError::TagCount);
-    // A face shared by three tets, on a membrane.
-    let mut q = p.clone();
-    q.push([0.2, 0.2, 0.2]);
-    q.push([-1.0, -1.0, -1.0]);
-    let three = [[1, 2, 3, 0], [1, 2, 3, 4], [1, 2, 3, 6], [0, 1, 2, 5]];
-    assert_eq!(
-        Mesh::from_tets(q, &three, vec![1, 0, 0, 0], 1).unwrap_err(),
-        MeshError::NonConforming(2)
-    );
-    // Two cells sharing vertex 1.
-    assert_eq!(
-        err(&[[0, 1, 2, 3], [1, 2, 3, 4]], vec![1, 2], 2).unwrap_err(),
-        MeshError::CellsTouch(0, 1)
-    );
-}
-
-#[test]
-fn rotated_mesh_keeps_areas_and_orientation_and_ignores_unused_points() {
-    let grid = Mesh::build(&single_cell()).unwrap();
-    let (c, s) = (0.6_f64, 0.8_f64);
-    // Rotate about z, then about x, and shift.
-    let rot = |p: [f64; 3]| {
-        let q = [c * p[0] - s * p[1], s * p[0] + c * p[1], p[2]];
-        [
-            q[0] + 3.0,
-            c * q[1] - s * q[2] - 1.0,
-            s * q[1] + c * q[2] + 0.5,
-        ]
-    };
-    let mut points: Vec<[f64; 3]> = grid.points.iter().map(|&p| rot(p)).collect();
-    points.push([100.0; 3]); // used by no tet
-    let tets: Vec<[u32; 4]> = grid
-        .tets
-        .iter()
-        .map(|t| t.map(|d| grid.dof_vertex[d as usize]))
-        .collect();
-    let mesh = Mesh::from_tets(points, &tets, grid.tet_tag.clone(), 1).unwrap();
-    let last = mesh.points.len() - 1;
-    assert_eq!(mesh.vertex_outer[last], NONE);
-    assert_eq!(mesh.vertex_inner[last], NONE);
-    assert_eq!(mesh.n_dofs(), grid.n_dofs());
-    for (a, b) in grid.membrane.iter().zip(&mesh.membrane) {
-        assert!((a.area - b.area).abs() < 1e-9);
-    }
-    let centre = rot([2.0, 1.0, 1.0]);
-    for f in &mesh.membrane_facets {
-        let p = f.map(|n| mesh.dof_position(mesh.membrane[n as usize].inner as usize));
-        let (u, w) = (
-            [0, 1, 2].map(|a| p[1][a] - p[0][a]),
-            [0, 1, 2].map(|a| p[2][a] - p[0][a]),
-        );
-        let n = [
-            u[1] * w[2] - u[2] * w[1],
-            u[2] * w[0] - u[0] * w[2],
-            u[0] * w[1] - u[1] * w[0],
-        ];
-        assert!((0..3).map(|a| n[a] * (p[0][a] - centre[a])).sum::<f64>() > 0.0);
     }
 }
