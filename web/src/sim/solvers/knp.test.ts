@@ -70,6 +70,9 @@ describe('knp solver adapter', () => {
     solver.setParams({ field: 'phi', synRate: 2000 });
     expect(sim.calls).toEqual(['syn 2000']);
     expect(solver.frame().fields[0]!.name).toBe('phi');
+    expect(() => solver.setParams({ field: 'bogus' })).toThrow();
+    expect(solver.frame().fields[0]!.name).toBe('phi');
+    expect(solver.frame().fields.find((x) => x.name === 'probes')!.shape).toEqual([0, 5]);
     solver.dispose();
     expect(sim.freed).toBe(true);
   });

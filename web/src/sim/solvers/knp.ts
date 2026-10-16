@@ -1,4 +1,4 @@
-import { KNP_PARAMS, decodeProbes } from '../../scales/knp/params';
+import { KNP_FIELDS, KNP_PARAMS, PROBE_ORDER, decodeProbes } from '../../scales/knp/params';
 import { defaultParams } from '../../ui/controls';
 import { KnpSim } from '../../wasm/pkg/ed_wasm.js';
 import type { Params } from '../protocol';
@@ -80,7 +80,7 @@ export function packFrame(
       { name: 'v', shape: [v.length], data: v },
       { name: 'compartments', shape: [geometry.length / 7, 7], data: geometry },
       { name: 'trace', shape: [trace.length / 2, 2], data: trace },
-      { name: 'probes', shape: [probes.length / 3, probeValues.length / Math.max(1, probes.length / 3)], data: probeValues },
+      { name: 'probes', shape: [probes.length / 3, PROBE_ORDER.length], data: probeValues },
     ],
     stats: { spikes: sim.spikes(), dt: sim.dt(), sizeX: sx!, sizeY: sy!, sizeZ: sz! },
   };
@@ -99,13 +99,19 @@ export function makeKnpSolver(
   let steps = 0;
   let msPerStep = 0;
 
+  /** Applies `p` to the simulation, then records it; a rejected value throws and is not kept. */
   const apply = (p: Params) => {
+    if ('field' in p && !KNP_FIELDS.some((f) => f.value === p.field)) throw new Error(`unknown field ${p.field}`);
     if ('synRate' in p) sim.set_syn_rate(Number(p.synRate));
     if ('stim' in p) sim.set_stim(Number(p.stim));
-    if ('dt' in p) sim.set_dt(Number(p.dt));
+    if ('dt' in p) {
+      sim.set_dt(Number(p.dt));
+      msPerStep = 0; // a step's cost grows with dt
+    }
     if ('probes' in p) probes = Float64Array.from(decodeProbes(String(p.probes)));
+    Object.assign(params, p);
   };
-  apply(params);
+  apply({ ...params });
 
   return {
     advance(budgetMs) {
@@ -124,7 +130,6 @@ export function makeKnpSolver(
     },
     frame: () => packFrame(sim, String(params.field), probes, trace.take(), steps),
     setParams(changed) {
-      Object.assign(params, changed);
       apply(changed);
     },
     dispose() {
