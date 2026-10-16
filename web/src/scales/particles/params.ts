@@ -60,6 +60,7 @@ export const PARTICLE_PARAMS = [
     key: 'particles',
     label: 'Ca²⁺ ions',
     options: [
+      { value: '100', label: '100' },
       { value: '1000', label: '1 000' },
       { value: '5000', label: '5 000' },
       { value: '20000', label: '20 000' },

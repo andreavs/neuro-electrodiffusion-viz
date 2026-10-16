@@ -5,8 +5,10 @@ import type { Range } from './range';
 /**
  * 256×1 RGBA8 texture of a colormap, linearly filtered. Caller disposes.
  *
- * The bytes are sRGB and are sampled raw (no colour-space decode): our shader
- * materials write them straight to the sRGB framebuffer.
+ * The bytes are sRGB; the texture is tagged as such so the GPU decodes them to
+ * linear on sampling, and our shaders end with three's `colorspace_fragment`,
+ * which encodes back to sRGB on screen but stays linear in the (HDR) bloom
+ * buffers, so colours match with and without post-processing.
  */
 export function createColormapTexture(cm: Colormap): THREE.DataTexture {
   const tex = new THREE.DataTexture(cm.lut, LUT_SIZE, 1, THREE.RGBAFormat, THREE.UnsignedByteType);
@@ -15,6 +17,7 @@ export function createColormapTexture(cm: Colormap): THREE.DataTexture {
   tex.wrapS = THREE.ClampToEdgeWrapping;
   tex.wrapT = THREE.ClampToEdgeWrapping;
   tex.generateMipmaps = false;
+  tex.colorSpace = THREE.SRGBColorSpace;
   tex.needsUpdate = true;
   return tex;
 }
@@ -32,12 +35,12 @@ export function colormapUniforms(cm: Colormap, range: Range = { min: 0, max: 1 }
   };
 }
 
-/** GLSL: `vec3 colormap(float v)` using uCmap/uRange; samples texel centres. */
+/** GLSL: linear-RGB `vec3 colormap(float v)` using uCmap/uRange; samples texel centres. */
 export const COLORMAP_GLSL = /* glsl */ `
 uniform sampler2D uCmap;
 uniform vec2 uRange;
 vec3 colormap(float v) {
-  if (v != v) return vec3(0.5); // NaN: neutral grey "no data"
+  if (v != v) return vec3(0.214); // NaN: neutral grey "no data" (sRGB 0.5)
   float span = uRange.y - uRange.x;
   float t = span > 0.0 ? clamp((v - uRange.x) / span, 0.0, 1.0) : 0.5;
   return texture2D(uCmap, vec2(t * (255.0 / 256.0) + 0.5 / 256.0, 0.5)).rgb;

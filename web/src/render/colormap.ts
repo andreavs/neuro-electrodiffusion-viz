@@ -2,6 +2,8 @@
  * Colormaps as 256-entry RGBA8 lookup tables.
  *
  * - `viridis`: perceptually uniform sequential map for concentrations.
+ * - `inferno`: sequential map from black, for the glow style's dark stage.
+ * - `icefire`: diverging map through black, for changes of either sign on a dark stage.
  * - `coolwarm`: diverging blue → light grey → red map for potentials, built by
  *   linear interpolation in CIELAB so lightness rises monotonically to the
  *   centre and falls monotonically after it.
@@ -30,6 +32,22 @@ function viridisAt(t: number): RGB {
   const c4: RGB = [6.228269936347081, 14.17993336680509, 56.69055260068105];
   const c5: RGB = [4.776384997670288, -13.74514537774601, -65.35303263337234];
   const c6: RGB = [-5.435455855934631, 4.645852612178535, 26.3124352495832];
+  const out: RGB = [0, 0, 0];
+  for (let i = 0; i < 3; i++) {
+    out[i] = c0[i] + t * (c1[i] + t * (c2[i] + t * (c3[i] + t * (c4[i] + t * (c5[i] + t * c6[i])))));
+  }
+  return out;
+}
+
+/** Polynomial fit to matplotlib's inferno (sRGB in [0, 1]), by Matt Zucker (CC0). */
+function infernoAt(t: number): RGB {
+  const c0: RGB = [0.0002189403691192265, 0.001651004631001012, -0.01948089843709184];
+  const c1: RGB = [0.1065134194856116, 0.5639564367884091, 3.932712388889277];
+  const c2: RGB = [11.60249308247187, -3.972853965665698, -15.9423941062914];
+  const c3: RGB = [-41.70399613139459, 17.43639888205313, 44.35414519872813];
+  const c4: RGB = [77.162935699427, -33.40235894210092, -81.80730925738993];
+  const c5: RGB = [-71.31942824499214, 32.62606426397723, 73.20951985803202];
+  const c6: RGB = [25.13112622477341, -12.24266895238567, -23.07032500287172];
   const out: RGB = [0, 0, 0];
   for (let i = 0; i < 3; i++) {
     out[i] = c0[i] + t * (c1[i] + t * (c2[i] + t * (c3[i] + t * (c4[i] + t * (c5[i] + t * c6[i])))));
@@ -107,7 +125,32 @@ function coolwarmAt(t: number): RGB {
   return labToSrgb([a[0] + (b[0] - a[0]) * s, a[1] + (b[1] - a[1]) * s, a[2] + (b[2] - a[2]) * s]);
 }
 
+/** Piecewise-linear interpolation through evenly spaced sRGB stops. */
+function stopsAt(stops: RGB[]): (t: number) => RGB {
+  return (t) => {
+    const x = Math.min(1, Math.max(0, t)) * (stops.length - 1);
+    const i = Math.min(stops.length - 2, Math.floor(x));
+    const f = x - i;
+    const [a, b] = [stops[i]!, stops[i + 1]!];
+    return [a[0] + (b[0] - a[0]) * f, a[1] + (b[1] - a[1]) * f, a[2] + (b[2] - a[2]) * f];
+  };
+}
+
+const icefireAt = stopsAt([
+  [0.75, 0.97, 1.0],
+  [0.2, 0.62, 0.95],
+  [0.12, 0.2, 0.55],
+  [0.0, 0.0, 0.0],
+  [0.55, 0.08, 0.12],
+  [0.95, 0.42, 0.12],
+  [1.0, 0.93, 0.55],
+]);
+
 export const viridis: Colormap = { name: 'viridis', lut: buildLut(viridisAt), diverging: false };
+/** Black → purple → orange → pale yellow: reads as glowing on a dark stage. */
+export const inferno: Colormap = { name: 'inferno', lut: buildLut(infernoAt), diverging: false };
+/** Diverging through black (cyan ← blue ← black → red → gold): both signs glow on a dark stage. */
+export const icefire: Colormap = { name: 'icefire', lut: buildLut(icefireAt), diverging: true };
 export const coolwarm: Colormap = { name: 'coolwarm', lut: buildLut(coolwarmAt), diverging: true };
 
 /** Map `t` in [0, 1] (clamped) to an RGBA8 entry, written into `out`. */
