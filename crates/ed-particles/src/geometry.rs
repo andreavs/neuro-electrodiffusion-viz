@@ -259,7 +259,7 @@ impl SpineGeometry {
 
 /// Gradient (∂/∂r, ∂/∂z) of [`box_sdf`].
 #[inline]
-fn box_grad(r: f64, z: f64, half_r: f64, z0: f64, z1: f64) -> (f64, f64) {
+pub(crate) fn box_grad(r: f64, z: f64, half_r: f64, z0: f64, z1: f64) -> (f64, f64) {
     let dx = r - half_r;
     let sz = if z >= 0.5 * (z0 + z1) { 1.0 } else { -1.0 };
     let dz = (z - 0.5 * (z0 + z1)).abs() - 0.5 * (z1 - z0);
@@ -288,7 +288,7 @@ fn unit2(u: f64, v: f64) -> (f64, f64) {
 
 /// SDF of the axisymmetric solid cylinder r ≤ half_r, z0 ≤ z ≤ z1, in the (r, z) plane.
 #[inline]
-fn box_sdf(r: f64, z: f64, half_r: f64, z0: f64, z1: f64) -> f64 {
+pub(crate) fn box_sdf(r: f64, z: f64, half_r: f64, z0: f64, z1: f64) -> f64 {
     let dx = r - half_r;
     let dz = (z - 0.5 * (z0 + z1)).abs() - 0.5 * (z1 - z0);
     let ox = dx.max(0.0);
