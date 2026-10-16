@@ -32,3 +32,4 @@
 .pv-tour-nav { display: flex; gap: 8px; }
 .pv-tour h3 { margin: 10px 0 4px; font-size: 1.05rem; }
 .pv-tour p { margin: 0; max-width: 90ch; line-height: 1.5; }
+.pv-tour [hidden] { display: none; }

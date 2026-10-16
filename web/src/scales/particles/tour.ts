@@ -22,7 +22,7 @@ const BASE: Params = { geometry: 'sharp', field: 'off', dv: 25, direction: 'out'
 export const TOUR: readonly TourStep[] = [
   {
     title: 'A handful of ions',
-    body: `A spine head holds only a few free Ca²⁺ ions: at the resting 70 nM, a typical head has about 2, and after an action potential about 100 stay free while the rest are buffered (${SABATINI}). With so few ions, each release escapes on its own schedule. Press <em>Release ions</em> a few times and watch the MFPT jump.`,
+    body: `A spine head holds only a few free Ca²⁺ ions: at the resting 70 nM, a typical 0.05 µm³ head has about 2 (the larger head drawn here, about 20), and after an action potential about 100 stay free while the rest are buffered (${SABATINI}). With so few ions, each release escapes on its own schedule. Press <em>Release ions</em> a few times and watch the MFPT jump.`,
     params: { ...BASE, particles: '100' },
   },
   {
@@ -64,43 +64,71 @@ export interface TourOptions {
   release(): void;
 }
 
-/** The tour box: the current step's text and buttons to move between steps. */
+/**
+ * The tour box: an intro, then the current step's text and buttons to move between steps.
+ * Choosing a step also resumes a paused run, since a step is something to watch.
+ */
 export function createTour(opts: TourOptions, steps: readonly TourStep[] = TOUR): HTMLElement {
   const el = document.createElement('section');
   el.className = 'pv-tour';
   el.setAttribute('aria-label', 'Guided tour');
+  el.innerHTML = `
+    <div class="pv-tour-head">
+      <span class="pv-tour-label"></span>
+      <span class="pv-tour-nav">
+        <button type="button" class="ctl-button" data-tour="prev">Back</button>
+        <button type="button" class="ctl-button" data-tour="close">Close</button>
+        <button type="button" class="ctl-button ctl-primary" data-tour="next"></button>
+      </span>
+    </div>
+    <div class="pv-tour-step" aria-live="polite"><h3></h3><p></p></div>`;
+  const q = <T extends HTMLElement>(sel: string) => el.querySelector<T>(sel)!;
+  const label = q('.pv-tour-label');
+  const prev = q<HTMLButtonElement>('[data-tour="prev"]');
+  const close = q<HTMLButtonElement>('[data-tour="close"]');
+  const next = q<HTMLButtonElement>('[data-tour="next"]');
+  const stepEl = q('.pv-tour-step');
   let index = -1;
+
+  // The buttons are kept (only their text and state change), so keyboard focus stays put.
+  const render = () => {
+    const touring = index >= 0;
+    prev.hidden = close.hidden = stepEl.hidden = !touring;
+    next.textContent = touring ? 'Next' : 'Start the tour';
+    if (!touring) {
+      label.innerHTML = `<strong>Why does charge matter in a spine?</strong>
+        <span class="muted">A ${steps.length}-step tour of what the electric field does to Ca²⁺ in a dendritic spine.</span>`;
+      next.disabled = false;
+      return;
+    }
+    const step = steps[index]!;
+    label.innerHTML = `<span class="muted">Guided tour · ${index + 1} of ${steps.length}</span>`;
+    prev.disabled = index === 0;
+    next.disabled = index === steps.length - 1;
+    q('h3').textContent = step.title;
+    q('p').innerHTML = step.body;
+    // Keep focus on a usable button when the one just pressed is disabled at either end.
+    if (document.activeElement instanceof HTMLButtonElement && document.activeElement.disabled)
+      (prev.disabled ? next : prev).focus();
+  };
 
   const show = (i: number) => {
     index = i;
-    const step = steps[i]!;
-    el.innerHTML = `
-      <div class="pv-tour-head">
-        <span class="muted">Guided tour · ${i + 1} of ${steps.length}</span>
-        <span class="pv-tour-nav">
-          <button type="button" class="ctl-button" data-tour="prev" ${i === 0 ? 'disabled' : ''}>Back</button>
-          <button type="button" class="ctl-button ctl-primary" data-tour="next" ${i === steps.length - 1 ? 'disabled' : ''}>Next</button>
-        </span>
-      </div>
-      <h3>${step.title}</h3>
-      <p>${step.body}</p>`;
-    if (!opts.apply(step.params)) opts.release();
-  };
-
-  const intro = () => {
-    el.innerHTML = `
-      <div class="pv-tour-head">
-        <span><strong>Why does charge matter in a spine?</strong>
-          <span class="muted">A seven-step tour of what the electric field does to Ca²⁺ in a dendritic spine.</span></span>
-        <button type="button" class="ctl-button ctl-primary" data-tour="next">Start the tour</button>
-      </div>`;
+    render();
+    if (!opts.apply(steps[i]!.params)) opts.release();
   };
 
   el.addEventListener('click', (ev) => {
     const b = (ev.target as HTMLElement).closest<HTMLButtonElement>('[data-tour]');
     if (!b) return;
+    if (b.dataset.tour === 'close') {
+      index = -1;
+      render();
+      next.focus();
+      return;
+    }
     show(Math.max(0, Math.min(steps.length - 1, index + (b.dataset.tour === 'next' ? 1 : -1))));
   });
-  intro();
+  render();
   return el;
 }

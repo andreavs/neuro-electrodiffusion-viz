@@ -274,9 +274,12 @@ export class ControlPanel {
    */
   setValues(values: Params): boolean {
     const changed: Params = {};
-    for (const [key, value] of Object.entries(values)) {
+    for (const [key, raw] of Object.entries(values)) {
       const spec = this.specs.get(key);
-      if (!spec || spec.kind === 'button' || key === SPEED_SPEC.key || this.values[key] === value) continue;
+      if (!spec || spec.kind === 'button' || key === SPEED_SPEC.key) continue;
+      // Clamped and checked against the options, as if typed into the control.
+      const value = readControl(spec, { value: String(raw), checked: raw === true })!;
+      if (this.values[key] === value) continue;
       this.values[key] = value;
       changed[key] = value;
       const input = [...this.el.querySelectorAll<HTMLInputElement>('[data-key]')].find((i) => i.dataset.key === key);

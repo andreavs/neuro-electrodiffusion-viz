@@ -4,22 +4,28 @@ import type { Params } from '../../sim/protocol';
 import { createTour, TOUR } from './tour';
 
 describe('createTour', () => {
-  it('applies each step, releases when nothing changed and stops at the ends', () => {
+  it('applies each step, releases when nothing changed, stops at the ends and closes', () => {
     const applied: Params[] = [];
     let releases = 0;
     let changed = true;
     const el = createTour({ apply: (p) => (applied.push(p), changed), release: () => void releases++ });
-    const click = (which: string) => el.querySelector<HTMLButtonElement>(`[data-tour="${which}"]`)!.click();
-    click('next');
+    const button = (which: string) => el.querySelector<HTMLButtonElement>(`[data-tour="${which}"]`)!;
+    const title = () => el.querySelector('h3')!.textContent;
+    expect(el.textContent).toContain(`A ${TOUR.length}-step tour`);
+    button('next').click();
     expect(applied).toEqual([TOUR[0]!.params]);
-    expect(el.querySelector('h3')!.textContent).toBe(TOUR[0]!.title);
-    expect(el.querySelector<HTMLButtonElement>('[data-tour="prev"]')!.disabled).toBe(true);
+    expect(title()).toBe(TOUR[0]!.title);
+    expect(button('prev').disabled).toBe(true);
     changed = false;
-    click('next');
-    expect(releases).toBe(1);
-    for (let i = 0; i < TOUR.length; i++) if (!el.querySelector<HTMLButtonElement>('[data-tour="next"]')!.disabled) click('next');
-    expect(el.textContent).toContain(`${TOUR.length} of ${TOUR.length}`);
-    click('prev');
-    expect(el.querySelector('h3')!.textContent).toBe(TOUR[TOUR.length - 2]!.title);
+    button('next').click();
+    expect([title(), releases]).toEqual([TOUR[1]!.title, 1]);
+    for (let i = 2; i < TOUR.length; i++) button('next').click();
+    expect(title()).toBe(TOUR[TOUR.length - 1]!.title);
+    expect(button('next').disabled).toBe(true);
+    button('prev').click();
+    expect(title()).toBe(TOUR[TOUR.length - 2]!.title);
+    button('close').click();
+    expect([button('prev').hidden, button('next').textContent]).toEqual([true, 'Start the tour']);
+    expect(applied).toHaveLength(TOUR.length + 1);
   });
 });

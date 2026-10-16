@@ -69,6 +69,8 @@ describe('ControlPanel (DOM)', () => {
     expect(el('[data-out="gsyn"]').textContent).toBe('2.0 mS');
     panel.setValues({ gsyn: 2 });
     expect(sentAfterSetup()).toHaveLength(1);
+    panel.setValues({ gsyn: 99, geom: 'nope' }); // clamped, and an unknown option falls back
+    expect(sentAfterSetup()[1]).toEqual({ type: 'setParams', params: { gsyn: 10, geom: 'a' } });
   });
 
   it('routes speed to setBudget, not setParams', () => {
