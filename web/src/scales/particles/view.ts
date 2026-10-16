@@ -11,6 +11,7 @@ import { LinePlot } from './plot';
 import { formatMfpt, histogramSteps, maxOf, mfptReadout } from './stats';
 import './view.css';
 
+/** Matches the solver's DISPLAY_MAX: ions beyond it are simulated but not drawn. */
 const MAX_IONS = 100_000;
 const NECK_COLOR = '#ff9f1c';
 const HEAD_COLOR = '#4cc9f0';
@@ -180,11 +181,12 @@ export function createParticlesView(): ScaleView {
         const stats = frame.stats ?? {};
         cloud.update(f.positions!, f.positions!.length / 3, f.regions);
 
-        const profile = f.profile!;
+        // The sharded solver's first frame after a release can arrive before the wall profile.
+        const profile = f.profile ?? new Float32Array(0);
         let sum = 0;
         for (let i = 0; i < profile.length; i++) sum += profile[i]! * (i + 1);
         const key = `${profile.length}:${sum}`;
-        if (key !== spineKey) {
+        if (key !== spineKey && profile.length >= 4) {
           spineKey = key;
           if (spine) {
             disposeObject(spine);

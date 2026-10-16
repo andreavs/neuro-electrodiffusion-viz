@@ -47,6 +47,10 @@ export interface ShardState {
   steps: number;
   timeMs: number;
   alive: number;
+  /** Escaped ions still moving in the dendrite. */
+  inDendrite: number;
+  /** Time of the last exit, or `timeMs` while ions are inside. */
+  passageTime: number;
   released: number;
   /** Fraction of this shard's released ions per bin. */
   histogram: Float32Array;
@@ -64,10 +68,15 @@ export interface ShardState {
   profile?: Float32Array;
   neckTop?: number;
   neckRadius?: number;
+  /** Dendrite size, µm; 0 with an absorbing base. */
+  dendriteRadius?: number;
+  dendriteHalfLength?: number;
 }
 
 export interface ShardError {
   type: 'error';
+  /** Release generation of the message that failed. */
+  gen?: number;
   message: string;
 }
 
@@ -155,6 +164,8 @@ export class ShardRunner {
       steps: this.steps,
       timeMs: sim.time_ms(),
       alive: sim.n_alive(),
+      inDendrite: sim.n_in_dendrite(),
+      passageTime: sim.passage_time_ms(),
       released: sim.n_released(),
       histogram: sim.histogram(false, this.bins, this.tMax),
       mfpt: sim.mfpt(false),
@@ -174,6 +185,8 @@ export class ShardRunner {
       s.profile = sim.profile(PROFILE_SEGMENTS);
       s.neckTop = sim.neck_top();
       s.neckRadius = sim.neck_radius();
+      s.dendriteRadius = sim.dendrite_radius();
+      s.dendriteHalfLength = sim.dendrite_half_length();
     }
     return s;
   }
