@@ -14,9 +14,9 @@ export interface EmiWasm {
   n_cells(): number;
   probe_x(): number;
   stimulated(): number;
-  extent(): Float32Array;
+  bounds(): Float32Array;
   membrane_positions(): Float32Array;
-  membrane_quads(): Uint32Array;
+  membrane_triangles(): Uint32Array;
   phi_m(): Float32Array;
   slice_positions(axis: number, frac: number): Float32Array;
   slice_tags(axis: number, frac: number): Float32Array;
@@ -40,7 +40,7 @@ const SLICE_KEYS = ['slice', 'slicePos'];
 const MAX_CATCH_UP_MS = 100;
 
 /**
- * Frame state the view must receive once: the mesh after every rebuild and the slice quads
+ * Frame state the view must receive once: the mesh after every rebuild and the slice triangles
  * after every move. `geometry` and `slice` count the versions so the view can cache by them.
  */
 export interface PackState {
@@ -61,18 +61,18 @@ export function packFrame(sim: EmiWasm, params: Params, state: PackState, steps:
   const fields: FrameField[] = [];
   if (!state.geometrySent) {
     const nodes = sim.membrane_positions();
-    const quads = sim.membrane_quads();
+    const tris = sim.membrane_triangles();
     fields.push(
       { name: 'nodes', shape: [nodes.length / 3, 3], data: nodes },
       // Node indices stay exact in float32 (meshes have far fewer than 2²⁴ nodes).
-      { name: 'quads', shape: [quads.length / 4, 4], data: Float32Array.from(quads) },
+      { name: 'tris', shape: [tris.length / 3, 3], data: Float32Array.from(tris) },
     );
   }
   const sendSlice = !state.sliceSent;
   if (sendSlice) {
     const tags = sim.slice_tags(axis, frac);
     fields.push(
-      { name: 'slicePositions', shape: [tags.length, 4, 3], data: sim.slice_positions(axis, frac) },
+      { name: 'slicePositions', shape: [tags.length, 3, 3], data: sim.slice_positions(axis, frac) },
       { name: 'sliceTags', shape: [tags.length], data: tags },
     );
   }
@@ -84,10 +84,10 @@ export function packFrame(sim: EmiWasm, params: Params, state: PackState, steps:
   if (sendSlice) state.sliceSent = true;
   fields.push(
     { name: 'phiM', shape: [phiM.length], data: phiM },
-    { name: 'slice', shape: [slice.length / 4, 4], data: slice },
+    { name: 'slice', shape: [slice.length / 3, 3], data: slice },
     { name: 'traces', shape: [traces.length / (1 + nCells), 1 + nCells], data: traces },
   );
-  const [ex, ey, ez] = sim.extent();
+  const [lx, ly, lz, hx, hy, hz] = sim.bounds();
   return {
     timeMs: sim.time_ms(),
     fields,
@@ -100,9 +100,12 @@ export function packFrame(sim: EmiWasm, params: Params, state: PackState, steps:
       // Which field `slice` holds (index into SLICE_FIELDS), so the view never colours it with another field's bar.
       sliceField: SLICE_FIELDS.indexOf(String(params.field)),
       stimulated: sim.stimulated(),
-      extentX: ex!,
-      extentY: ey!,
-      extentZ: ez!,
+      loX: lx!,
+      loY: ly!,
+      loZ: lz!,
+      hiX: hx!,
+      hiY: hy!,
+      hiZ: hz!,
     },
   };
 }

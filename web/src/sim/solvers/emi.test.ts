@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { makeEmiSolver, packFrame, type EmiWasm, type PackState } from './emi';
 
-/** Two cells, three membrane nodes, one membrane quad and two slice quads; records calls. */
+/** Two cells, three membrane nodes, one membrane triangle and two slice triangles; records calls. */
 class FakeSim implements EmiWasm {
   static clock = { t: 0, msPerStep: 4 };
   calls: string[] = [];
@@ -26,14 +26,14 @@ class FakeSim implements EmiWasm {
   n_cells = () => 2;
   probe_x = () => 150;
   stimulated = () => 2;
-  extent = () => Float32Array.of(210, 1.4, 1.4);
+  bounds = () => Float32Array.of(0, 0, 0, 210, 1.4, 1.4);
   membrane_positions = () => new Float32Array(9);
-  membrane_quads = () => Uint32Array.of(0, 1, 2, 0);
+  membrane_triangles = () => Uint32Array.of(0, 1, 2);
   phi_m = () => Float32Array.of(-65, -64, -63);
-  slice_positions = (axis: number) => new Float32Array(24).fill(axis);
+  slice_positions = (axis: number) => new Float32Array(18).fill(axis);
   slice_tags = () => Float32Array.of(0, 1);
   slice_values = (_axis: number, frac: number, field: string) =>
-    new Float32Array(8).fill(field === 'k' ? 4 + frac : frac);
+    new Float32Array(6).fill(field === 'k' ? 4 + frac : frac);
   take_traces = () => Float32Array.of(0, -65, -65, 0.1, -60, -65);
   free() {
     this.freed = true;
@@ -58,22 +58,22 @@ function setup(params = {}) {
 const names = (f: { fields: { name: string }[] }) => f.fields.map((x) => x.name);
 
 describe('packFrame', () => {
-  it('sends the mesh and slice quads once, then only the changing fields', () => {
+  it('sends the mesh and slice triangles once, then only the changing fields', () => {
     const sim = new FakeSim(3);
     const state: PackState = { geometry: 1, slice: 1, geometrySent: false, sliceSent: false };
     const params = { slice: 'across', slicePos: 0.25, field: 'k' };
     const first = packFrame(sim, params, state, 7);
-    expect(names(first)).toEqual(['nodes', 'quads', 'slicePositions', 'sliceTags', 'phiM', 'slice', 'traces']);
+    expect(names(first)).toEqual(['nodes', 'tris', 'slicePositions', 'sliceTags', 'phiM', 'slice', 'traces']);
     const f = Object.fromEntries(first.fields.map((x) => [x.name, x]));
-    expect(f.quads!.shape).toEqual([1, 4]);
-    expect(Array.from(f.quads!.data)).toEqual([0, 1, 2, 0]);
-    expect(f.slicePositions!.shape).toEqual([2, 4, 3]);
+    expect(f.tris!.shape).toEqual([1, 3]);
+    expect(Array.from(f.tris!.data)).toEqual([0, 1, 2]);
+    expect(f.slicePositions!.shape).toEqual([2, 3, 3]);
     expect(f.slicePositions!.data[0]).toBe(0); // across → normal along x
-    expect(f.slice!.shape).toEqual([2, 4]);
+    expect(f.slice!.shape).toEqual([2, 3]);
     expect(f.slice!.data[0]).toBeCloseTo(4.25);
     expect(f.traces!.shape).toEqual([2, 3]);
     expect(first.steps).toBe(7);
-    expect(first.stats).toMatchObject({ geometry: 1, slice: 1, nCells: 2, probeX: 150, stimulated: 2, extentX: 210 });
+    expect(first.stats).toMatchObject({ geometry: 1, slice: 1, nCells: 2, probeX: 150, stimulated: 2, loX: 0, hiX: 210 });
 
     expect(names(packFrame(sim, params, state, 8))).toEqual(['phiM', 'slice', 'traces']);
   });
@@ -121,7 +121,7 @@ describe('makeEmiSolver', () => {
     expect(sims).toHaveLength(2);
     expect(sims[0]!.freed).toBe(true);
     const f = solver.frame();
-    expect(names(f)).toContain('quads');
+    expect(names(f)).toContain('tris');
     // Versions never repeat, not even across solvers (a Reset builds a new one).
     expect(f.stats!.geometry).toBeGreaterThan(before.slice!);
     expect(setup().solver.frame().stats!.geometry).toBeGreaterThan(f.stats!.slice!);
