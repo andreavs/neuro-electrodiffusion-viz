@@ -34,6 +34,7 @@ use ed_core::Simulation;
 use fv::{add_net_inflow, for_each_face_run, stride};
 
 pub mod fv;
+pub mod neuron;
 
 /// Generic anion with the properties of Cl⁻ (Publication 1, Table 2).
 pub const X: IonSpecies = IonSpecies { name: "X-", ..CL };
