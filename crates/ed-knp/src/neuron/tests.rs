@@ -2,7 +2,7 @@ use super::*;
 
 /// Somatic spike times and peak potential over the next `ms`.
 fn spike_times(n: &mut Neuron, ms: f64) -> (Vec<f64>, f64) {
-    let steps = (ms / n.params.dt).round() as usize;
+    let steps = (ms / n.params().dt).round() as usize;
     let (mut times, mut peak) = (Vec::new(), f64::MIN);
     let mut above = n.v()[0] > 0.0;
     for _ in 0..steps {
@@ -17,9 +17,9 @@ fn spike_times(n: &mut Neuron, ms: f64) -> (Vec<f64>, f64) {
     (times, peak)
 }
 
-/// Largest |Σ_j (I_Na + I_K + I_X + I_cap)| relative to Σ_j |I_cap|.
+/// |Σ_j (I_Na + I_K + I_X + I_cap) + I_return| relative to the current magnitudes.
 fn conservation_error(n: &Neuron) -> f64 {
-    let mut sum = 0.0;
+    let mut sum = n.electrode_return();
     let mut mag = 1e-12;
     for j in 0..n.len() {
         sum += n.i_na()[j] + n.i_k()[j] + n.i_x()[j] + n.i_cap()[j];
@@ -43,7 +43,7 @@ fn stays_at_rest_without_input() {
 #[test]
 fn somatic_step_fires_repeatedly() {
     let mut n = Neuron::pyramidal();
-    n.stim_na = 2.0;
+    n.i_stim = 2.0;
     let (spikes, peak) = spike_times(&mut n, 200.0);
     assert!(spikes.len() >= 4, "{spikes:?}");
     assert!(peak > 20.0, "peak {peak}");
@@ -52,47 +52,65 @@ fn somatic_step_fires_repeatedly() {
 #[test]
 fn currents_are_conserved_every_step() {
     let mut n = Neuron::pyramidal();
-    n.stim_na = 2.0;
-    n.syn_rate_hz = 5000.0;
+    n.i_stim = 2.0;
     let mut worst: f64 = 0.0;
     for _ in 0..4000 {
         n.step(1);
         worst = worst.max(conservation_error(&n));
     }
     assert!(worst < 1e-10, "relative imbalance {worst}");
-    // The electrode return is booked as X⁻ at the soma.
-    assert!((n.i_x()[0] + 2.0).abs() < 1e-9);
+    assert!((n.electrode_return() + 2.0).abs() < 1e-9);
 }
 
 #[test]
-fn poisson_input_rate_controls_firing() {
-    let rate = |hz: f64| {
-        let mut n = Neuron::pyramidal();
-        n.syn_rate_hz = hz;
-        spike_times(&mut n, 1000.0).0.len()
-    };
-    let (low, high) = (rate(0.0), rate(10_000.0));
-    assert_eq!(low, 0);
-    assert!(high >= 3, "{high} spikes/s");
+fn each_compartment_balances_its_axial_currents() {
+    // Backward-Euler rows: membrane current out = axial current in (+ stim).
+    let mut n = Neuron::pyramidal();
+    n.i_stim = 3.0;
+    for _ in 0..200 {
+        n.step(1);
+        let mut net_in = vec![0.0; n.len()];
+        net_in[0] = n.i_stim;
+        for i in 1..n.len() {
+            let f = n.g_axial[i] * (n.v[n.parent[i]] - n.v[i]);
+            net_in[i] += f;
+            net_in[n.parent[i]] -= f;
+        }
+        for (i, inflow) in net_in.iter().enumerate() {
+            let out = n.i_na[i] + n.i_k[i] + n.i_x[i] + n.i_cap[i];
+            assert!(
+                (out - inflow).abs() < 1e-9 * (1.0 + inflow.abs()),
+                "row {i}: {out} vs {inflow}"
+            );
+        }
+    }
 }
 
 #[test]
-fn same_seed_is_deterministic() {
-    let run = || {
-        let mut n = Neuron::pyramidal();
-        n.syn_rate_hz = 5000.0;
-        n.step(2000);
-        n.v().to_vec()
-    };
-    assert_eq!(run(), run());
+fn outputs_average_over_a_multi_step_call() {
+    let mut n = Neuron::pyramidal();
+    n.i_stim = 2.0;
+    let mut m = n.clone();
+    let mut mean = vec![0.0; n.len()];
+    for _ in 0..4 {
+        m.step(1);
+        mean.iter_mut()
+            .zip(m.i_k())
+            .for_each(|(a, b)| *a += b / 4.0);
+    }
+    n.step(4);
+    assert_eq!(n.v(), m.v());
+    for (a, b) in n.i_k().iter().zip(&mean) {
+        assert!((a - b).abs() < 1e-12 * (1.0 + b.abs()));
+    }
+    assert!(conservation_error(&n) < 1e-10);
 }
 
 #[test]
 #[ignore = "timing; run with --release -- --ignored --nocapture"]
 fn step_time() {
     let mut n = Neuron::pyramidal();
-    n.syn_rate_hz = 5000.0;
-    n.stim_na = 0.5;
+    n.i_stim = 0.5;
     let steps = 40_000;
     let t0 = std::time::Instant::now();
     n.step(steps);

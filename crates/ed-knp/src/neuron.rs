@@ -17,22 +17,30 @@
 //!
 //! Outputs, per compartment, in nA with **positive = positive charge leaving
 //! the cell** (the Publication 1 convention): [`Neuron::i_na`], [`Neuron::i_k`],
-//! [`Neuron::i_x`] and [`Neuron::i_cap`], plus [`Neuron::centres`] in µm. The
-//! ionic currents are those over the step just taken, evaluated at the new
-//! potential. Since axial currents cancel pairwise, the sum of all four over
-//! all compartments is zero to round-off, which keeps the KNP solver
-//! electroneutral. A KNP solver turns them into sources with
+//! [`Neuron::i_x`] and [`Neuron::i_cap`], plus [`Neuron::centres`] in µm. They
+//! are averages over the internal steps of the last [`Simulation::step`] call,
+//! so a KNP solver with a longer time step gets the charge actually moved;
+//! within a step, ionic currents are evaluated at the new potential with the
+//! gates frozen at their start-of-step values. Since axial currents cancel
+//! pairwise, the sum of all four over all compartments equals the electrode
+//! current, `−`[`Neuron::electrode_return`], to round-off, which keeps the
+//! KNP solver electroneutral. A KNP solver turns them into sources with
 //! `f_k = I_k / (F z_k α)` (Publication 1, eq 38).
+//!
+//! Without ion pumps, the resting membrane is not ion-neutral: it carries a
+//! steady inward Na⁺ and equal outward K⁺ current (≈ 0.4 nA in total for the
+//! default cell), so extracellular K⁺ slowly builds up even without input.
 //!
 //! Ion assignment:
 //! - Leak currents are ion specific (g_L^Na, g_L^K, g_L^Cl of the membrane
 //!   model), so no non-specific leak needs splitting.
-//! - Synapses open Na⁺ channels (E_syn = E_Na), so synaptic current is Na⁺.
+//! - Synapses (when added) open Na⁺ channels (E_syn = E_Na), so synaptic
+//!   current is Na⁺.
 //! - Cl⁻ currents are reported as the generic anion X⁻ of the KNP model.
-//! - The somatic current electrode is not a transmembrane current. Its return
-//!   path is modelled as a Ag/AgCl ground releasing Cl⁻ at the soma, i.e. an
-//!   outward-positive X⁻ current of `−I_stim` at the soma, so the sources
-//!   still sum to zero.
+//! - The somatic current electrode is not a transmembrane current and is not
+//!   in any of the arrays. [`Neuron::electrode_return`] gives the
+//!   source the KNP solver must add for its return path to keep the total
+//!   zero, e.g. as Cl⁻ released by a Ag/AgCl ground at the soma.
 
 mod morphology;
 #[cfg(test)]
@@ -56,8 +64,8 @@ pub const TISSUE_CONCENTRATIONS: IonConcentrations = IonConcentrations {
 
 /// Soma and axon membrane: the KNP-EMI Hodgkin-Huxley channels, with the leak
 /// scaled to the classic HH total of 0.3 mS/cm² (Na⁺/K⁺ ratio kept). With the
-/// KNP-EMI leak of 1 mS/cm² the soma, loaded by the dendrites, fires only an
-/// onset spike for a sustained input instead of firing tonically.
+/// KNP-EMI leak of 1 mS/cm², the dendrite-loaded soma fires tonically only in
+/// a narrow band of input currents (around 2 nA) and gives single spikes elsewhere.
 pub const SOMA_AXON: MembraneParams = MembraneParams {
     g_leak_na: 0.06,
     g_leak_k: 0.24,
@@ -70,7 +78,6 @@ pub const SOMA_AXON: MembraneParams = MembraneParams {
 pub const DENDRITE: MembraneParams = MembraneParams {
     g_leak_na: 0.01,
     g_leak_k: 0.04,
-    g_leak_cl: 0.0,
     ..MembraneParams::PASSIVE
 };
 
@@ -85,12 +92,9 @@ pub struct NeuronParams {
     pub active: MembraneParams,
     /// Membrane of the dendrites.
     pub passive: MembraneParams,
+    /// Fixed intra- and extracellular concentrations.
     pub concentrations: IonConcentrations,
-    /// Peak conductance added by one synaptic event, nS.
-    pub syn_weight_ns: f64,
-    /// RNG seed for the Poisson input.
-    pub seed: u64,
-    /// Simulated time to relax to rest during construction, ms.
+    /// Simulated time to relax to rest during construction (with Δt = 0.5 ms), ms.
     pub settle_ms: f64,
 }
 
@@ -102,8 +106,6 @@ impl Default for NeuronParams {
             active: SOMA_AXON,
             passive: DENDRITE,
             concentrations: TISSUE_CONCENTRATIONS,
-            syn_weight_ns: 1.0,
-            seed: 1,
             settle_ms: 200.0,
         }
     }
@@ -112,13 +114,10 @@ impl Default for NeuronParams {
 /// A multi-compartment neuron. See the [module docs](self).
 #[derive(Debug, Clone)]
 pub struct Neuron {
-    pub params: NeuronParams,
-    /// Total rate of excitatory synaptic events over all dendrites, Hz,
-    /// distributed in proportion to membrane area. Can be changed at any time.
-    pub syn_rate_hz: f64,
-    /// Somatic current step amplitude, nA (depolarising positive). Can be
-    /// changed at any time.
-    pub stim_na: f64,
+    params: NeuronParams,
+    /// Current injected into the root (soma), nA (depolarising positive). Can
+    /// be changed at any time.
+    pub i_stim: f64,
 
     morph: Morphology,
     centres: Vec<[f64; 3]>,
@@ -134,9 +133,6 @@ pub struct Neuron {
     slot: Vec<(bool, usize)>,
     active: MembranePatches,
     passive: MembranePatches,
-    /// Probability per step of a synaptic event, per compartment, at 1 Hz total.
-    syn_share: Vec<f64>,
-    rng: u64,
     time: f64,
 
     v: Vec<f64>,
@@ -144,6 +140,7 @@ pub struct Neuron {
     i_k: Vec<f64>,
     i_x: Vec<f64>,
     i_cap: Vec<f64>,
+    i_electrode: f64,
     // Hines scratch.
     diag: Vec<f64>,
     rhs: Vec<f64>,
@@ -186,25 +183,9 @@ impl Neuron {
                 n_pas += 1;
             }
         }
-        let dend_area: f64 = comps
-            .iter()
-            .filter(|c| c.kind == Kind::Dendrite)
-            .map(|c| c.area())
-            .sum();
-        let syn_share = comps
-            .iter()
-            .map(|c| {
-                if c.kind == Kind::Dendrite {
-                    c.area() / dend_area
-                } else {
-                    0.0
-                }
-            })
-            .collect();
         let conc = params.concentrations;
         let mut neuron = Self {
-            syn_rate_hz: 0.0,
-            stim_na: 0.0,
+            i_stim: 0.0,
             centres: comps.iter().map(Compartment::centre).collect(),
             scale: comps.iter().map(|c| c.area() * 1e-5).collect(),
             parent,
@@ -214,13 +195,12 @@ impl Neuron {
             passive: MembranePatches::new(n_pas, params.passive, conc),
             v: vec![0.0; n],
             slot,
-            syn_share,
-            rng: params.seed.wrapping_mul(0x9E37_79B9_7F4A_7C15) | 1,
             time: 0.0,
             i_na: vec![0.0; n],
             i_k: vec![0.0; n],
             i_x: vec![0.0; n],
             i_cap: vec![0.0; n],
+            i_electrode: 0.0,
             diag: vec![0.0; n],
             rhs: vec![0.0; n],
             morph,
@@ -230,8 +210,11 @@ impl Neuron {
             let (act, j) = neuron.slot[i];
             neuron.v[i] = if act { &neuron.active } else { &neuron.passive }.phi_m[j];
         }
-        let settle = (neuron.params.settle_ms / neuron.params.dt).round() as usize;
-        neuron.step(settle);
+        // Backward Euler and Rush-Larsen are stable at large steps and share
+        // the fixed point of the fine scheme, so relax with a coarse step.
+        let dt = std::mem::replace(&mut neuron.params.dt, 0.5);
+        neuron.step((neuron.params.settle_ms / 0.5).round() as usize);
+        neuron.params.dt = dt;
         neuron.time = 0.0;
         neuron
     }
@@ -241,6 +224,9 @@ impl Neuron {
         Self::new(Morphology::pyramidal(), NeuronParams::default())
     }
 
+    pub fn params(&self) -> &NeuronParams {
+        &self.params
+    }
     pub fn morphology(&self) -> &Morphology {
         &self.morph
     }
@@ -267,51 +253,23 @@ impl Neuron {
         &self.i_k
     }
     /// X⁻ (Cl⁻) current per compartment over the last step, nA, outward
-    /// positive. Includes the electrode return at the soma.
+    /// positive.
     pub fn i_x(&self) -> &[f64] {
         &self.i_x
+    }
+    /// Outward-positive source (nA) at the root compartment's centre that
+    /// closes the electrode circuit: `−i_stim`, averaged like the currents.
+    pub fn electrode_return(&self) -> f64 {
+        self.i_electrode
     }
     /// Capacitive current per compartment over the last step, nA, outward positive.
     pub fn i_cap(&self) -> &[f64] {
         &self.i_cap
     }
 
-    /// Uniform random number in [0, 1) (xorshift64*).
-    fn uniform(&mut self) -> f64 {
-        let mut x = self.rng;
-        x ^= x >> 12;
-        x ^= x << 25;
-        x ^= x >> 27;
-        self.rng = x;
-        (x.wrapping_mul(0x2545_F491_4F6C_DD1D) >> 11) as f64 * (1.0 / (1u64 << 53) as f64)
-    }
-
-    /// Draw this step's synaptic events and add them to the dendritic synapses.
-    fn deliver_synapses(&mut self, t: f64) {
-        let p_unit = self.syn_rate_hz * 1e-3 * self.params.dt;
-        if p_unit <= 0.0 {
-            return;
-        }
-        for i in 0..self.len() {
-            let p = p_unit * self.syn_share[i];
-            if p > 0.0 && self.uniform() < p {
-                let (act, j) = self.slot[i];
-                // nS → mS/cm²: 1e-6 mS / (A · 1e-8 cm²) = 100 / A.
-                let dg = self.params.syn_weight_ns * 1e-3 / self.scale[i];
-                let pop = if act {
-                    &mut self.active
-                } else {
-                    &mut self.passive
-                };
-                let g = pop.synaptic_conductance(j, t) + dg;
-                pop.set_synapse(j, g, t);
-            }
-        }
-    }
-
-    fn step_once(&mut self) {
+    /// One internal step; adds `w` times its currents to the outputs.
+    fn step_once(&mut self, w: f64) {
         let (t, dt) = (self.time, self.params.dt);
-        self.deliver_synapses(t);
         self.active.compute_currents(t);
         self.passive.compute_currents(t);
         let n = self.len();
@@ -321,7 +279,7 @@ impl Neuron {
             let s = self.scale[i];
             let cap = pop.params.c_m * s / dt;
             let g = pop.g_ch[j] * s;
-            let stim = if i == 0 { self.stim_na } else { 0.0 };
+            let stim = if i == 0 { self.i_stim } else { 0.0 };
             self.diag[i] = cap + g + self.g_axial_sum[i];
             self.rhs[i] = (cap + g) * self.v[i] - pop.i_ch[j] * s + stim;
         }
@@ -353,13 +311,13 @@ impl Neuron {
             let pop = if act { &self.active } else { &self.passive };
             let s = self.scale[i];
             let v_new = self.rhs[i];
-            self.i_cap[i] = pop.params.c_m * s / dt * (v_new - self.v[i]);
-            self.i_na[i] = pop.i_na[j] * s;
-            self.i_k[i] = pop.i_k[j] * s;
-            self.i_x[i] = pop.i_cl[j] * s;
+            self.i_cap[i] += w * pop.params.c_m * s / dt * (v_new - self.v[i]);
+            self.i_na[i] += w * pop.i_na[j] * s;
+            self.i_k[i] += w * pop.i_k[j] * s;
+            self.i_x[i] += w * pop.i_cl[j] * s;
             self.v[i] = v_new;
         }
-        self.i_x[0] -= self.stim_na;
+        self.i_electrode -= w * self.i_stim;
         update_gates(&mut self.active, dt);
         self.time += dt;
     }
@@ -381,8 +339,18 @@ fn update_gates(p: &mut MembranePatches, dt: f64) {
 
 impl Simulation for Neuron {
     fn step(&mut self, n: usize) {
+        let w = 1.0 / n.max(1) as f64;
+        for out in [
+            &mut self.i_na,
+            &mut self.i_k,
+            &mut self.i_x,
+            &mut self.i_cap,
+        ] {
+            out.fill(0.0);
+        }
+        self.i_electrode = 0.0;
         for _ in 0..n {
-            self.step_once();
+            self.step_once(w);
         }
     }
 
