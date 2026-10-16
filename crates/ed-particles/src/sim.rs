@@ -238,6 +238,12 @@ pub struct ParticleSim<G: Geometry> {
     survival: Vec<(f64, f64)>,
     survival_every: u64,
     xyz: Vec<f32>,
+    /// Escaped particles still moving (domains with an [`Geometry::escaped`] region).
+    ex: Vec<f64>,
+    ey: Vec<f64>,
+    ez: Vec<f64>,
+    /// Time of the last step that began with particles inside, ms.
+    passage_time: f64,
 }
 
 impl<G: Geometry> ParticleSim<G> {
@@ -262,6 +268,10 @@ impl<G: Geometry> ParticleSim<G> {
             survival: Vec::new(),
             survival_every: 1,
             xyz: Vec::new(),
+            ex: Vec::new(),
+            ey: Vec::new(),
+            ez: Vec::new(),
+            passage_time: 0.0,
         }
     }
 
@@ -298,7 +308,14 @@ impl<G: Geometry> ParticleSim<G> {
     pub fn release(&mut self, n: usize) {
         assert!(n <= MAX_PARTICLES, "at most {MAX_PARTICLES} particles");
         let p = self.geom.release_point();
-        for v in [&mut self.x, &mut self.y, &mut self.z] {
+        for v in [
+            &mut self.x,
+            &mut self.y,
+            &mut self.z,
+            &mut self.ex,
+            &mut self.ey,
+            &mut self.ez,
+        ] {
             v.clear();
         }
         self.x.resize(n, p[0]);
@@ -306,6 +323,7 @@ impl<G: Geometry> ParticleSim<G> {
         self.z.resize(n, p[2]);
         self.n_released = n;
         self.time = 0.0;
+        self.passage_time = 0.0;
         self.steps = 0;
         self.exit_times.clear();
         self.exit_times.reserve(n);
@@ -316,100 +334,77 @@ impl<G: Geometry> ParticleSim<G> {
 
     /// Advances all live particles by one time step.
     pub fn step_once(&mut self) {
-        let sigma = self.params.sigma();
-        let mob = self.params.mobility_dt();
-        let uniform = self
-            .field
-            .uniform()
-            .map(|e| [mob * e[0], mob * e[1], mob * e[2]]);
+        let mover = Mover {
+            sigma: self.params.sigma(),
+            mob: self.params.mobility_dt(),
+            field: self.field.as_ref(),
+        };
         let t_end = self.time + self.params.dt;
-        let mut noise = [0.0; 3 * CHUNK];
-        let mut drift = [[0.0; 3]; CHUNK];
-        let n = self.x.len();
-        let mut absorbed = 0;
-        for start in (0..n).step_by(CHUNK) {
-            let end = (start + CHUNK).min(n);
-            let len = end - start;
-            self.rng.fill_normal(&mut noise[..3 * len]);
-            match uniform {
-                Some(d) => drift[..len].fill(d),
-                None => {
-                    // One dynamic call per chunk; the loop inside is statically dispatched.
-                    self.field.field_batch(
-                        &self.x[start..end],
-                        &self.y[start..end],
-                        &self.z[start..end],
-                        &mut drift[..len],
-                    );
-                    for d in &mut drift[..len] {
-                        *d = [mob * d[0], mob * d[1], mob * d[2]];
-                    }
-                }
-            }
-            debug_assert!(
-                drift[..len].iter().flatten().all(|v| v.is_finite()),
-                "electric field returned a non-finite value"
-            );
-            for j in 0..len {
-                let i = start + j;
-                let p = [self.x[i], self.y[i], self.z[i]];
-                let q = [
-                    p[0] + drift[j][0] + sigma * noise[3 * j],
-                    p[1] + drift[j][1] + sigma * noise[3 * j + 1],
-                    p[2] + drift[j][2] + sigma * noise[3 * j + 2],
-                ];
-                let r = match resolve_step(&self.geom, p, q) {
-                    StepOutcome::Inside(r) => r,
-                    StepOutcome::Absorbed => {
-                        self.exit_times.push(t_end);
-                        absorbed += 1;
-                        // Marked for removal below.
-                        [f64::NAN; 3]
-                    }
-                };
-                self.x[i] = r[0];
-                self.y[i] = r[1];
-                self.z[i] = r[2];
-            }
+        let in_spine = !self.x.is_empty();
+        // Escaped particles move first, so the ones that escape during this step are not
+        // moved twice.
+        let pop = [&mut self.ex, &mut self.ey, &mut self.ez];
+        let gone = mover.advance(&self.geom, &mut self.rng, pop, |outcome| match outcome {
+            StepOutcome::Inside(r) => Some(r),
+            StepOutcome::Absorbed => None,
+        });
+        if gone {
+            compact([&mut self.ex, &mut self.ey, &mut self.ez]);
         }
-        if absorbed > 0 {
-            self.compact();
+        let (geom, exit_times) = (&self.geom, &mut self.exit_times);
+        let (ex, ey, ez) = (&mut self.ex, &mut self.ey, &mut self.ez);
+        let pop = [&mut self.x, &mut self.y, &mut self.z];
+        let left = mover.advance(geom, &mut self.rng, pop, |outcome| match outcome {
+            StepOutcome::Inside(r) if !geom.escaped(r) => Some(r),
+            outcome => {
+                exit_times.push(t_end);
+                if let StepOutcome::Inside(r) = outcome {
+                    ex.push(r[0]);
+                    ey.push(r[1]);
+                    ez.push(r[2]);
+                }
+                None
+            }
+        });
+        if left {
+            compact([&mut self.x, &mut self.y, &mut self.z]);
         }
         self.time = t_end;
         self.steps += 1;
-        if self.steps % self.survival_every == 0 {
-            self.survival.push((self.time, self.survival_fraction()));
-            if self.survival.len() >= SURVIVAL_CAPACITY {
-                // Keep t = 0 and every other sample; sample half as often from now on.
-                let mut k = 0;
-                self.survival.retain(|_| {
-                    k += 1;
-                    k % 2 == 1
-                });
-                self.survival_every *= 2;
+        if in_spine {
+            self.passage_time = t_end;
+            // Always sample the moment the last particle escapes, so the curve ends at 0.
+            if self.steps % self.survival_every == 0 || self.x.is_empty() {
+                // Thin before pushing, so the newest sample (maybe the last exit) is kept.
+                if self.survival.len() + 1 >= SURVIVAL_CAPACITY {
+                    // Keep t = 0 and every other sample; sample half as often from now on.
+                    let mut k = 0;
+                    self.survival.retain(|_| {
+                        k += 1;
+                        k % 2 == 1
+                    });
+                    self.survival_every *= 2;
+                }
+                self.survival.push((self.time, self.survival_fraction()));
             }
         }
     }
 
-    /// Removes particles marked as absorbed (NaN x), keeping the others in order.
-    fn compact(&mut self) {
-        let mut w = 0;
-        for r in 0..self.x.len() {
-            if !self.x[r].is_nan() {
-                self.x[w] = self.x[r];
-                self.y[w] = self.y[r];
-                self.z[w] = self.z[r];
-                w += 1;
-            }
-        }
-        self.x.truncate(w);
-        self.y.truncate(w);
-        self.z.truncate(w);
-    }
-
-    /// Live particles.
+    /// Live particles that have not escaped yet.
     pub fn n_alive(&self) -> usize {
         self.x.len()
+    }
+
+    /// Escaped particles that are still moving (always 0 when escaping means absorption).
+    /// They stay counted here even if they wander back out of the escaped region.
+    pub fn n_escaped_moving(&self) -> usize {
+        self.ex.len()
+    }
+
+    /// Simulated time until the last particle escaped, or the current time while some
+    /// are still inside, ms. Survival samples stop here.
+    pub fn passage_time(&self) -> f64 {
+        self.passage_time
     }
 
     /// Particles released by the last [`ParticleSim::release`].
@@ -469,7 +464,7 @@ impl<G: Geometry> ParticleSim<G> {
         if n == 0 {
             return None;
         }
-        let total = self.exit_times.iter().sum::<f64>() + self.n_alive() as f64 * self.time;
+        let total = self.exit_times.iter().sum::<f64>() + self.n_alive() as f64 * self.passage_time;
         let mean = total / n as f64;
         Some(MfptEstimate {
             mean,
@@ -506,18 +501,113 @@ impl<G: Geometry> ParticleSim<G> {
         &self.xyz
     }
 
-    /// Calls `f` with the position (f64, µm) of every live particle.
+    /// Calls `f` with the position (f64, µm) of every live particle that has not escaped.
     pub fn for_each_position(&self, mut f: impl FnMut(Vec3)) {
         for i in 0..self.x.len() {
             f([self.x[i], self.y[i], self.z[i]]);
         }
     }
+
+    /// Calls `f` with the position (f64, µm) of every escaped particle still moving,
+    /// wherever it now is.
+    pub fn for_each_escaped_position(&self, mut f: impl FnMut(Vec3)) {
+        for i in 0..self.ex.len() {
+            f([self.ex[i], self.ey[i], self.ez[i]]);
+        }
+    }
+}
+
+/// Moves one population (struct-of-arrays) through a time step.
+struct Mover<'a> {
+    sigma: f64,
+    mob: f64,
+    field: &'a dyn ElectricField,
+}
+
+impl Mover<'_> {
+    /// Moves every particle of `pop` and hands each outcome to `fate`, which returns the new
+    /// position or `None` to remove the particle (marked NaN; see [`compact`]). Returns
+    /// whether any particle was removed.
+    fn advance<G: Geometry>(
+        &self,
+        geom: &G,
+        rng: &mut Xoshiro256pp,
+        [xs, ys, zs]: [&mut Vec<f64>; 3],
+        mut fate: impl FnMut(StepOutcome) -> Option<Vec3>,
+    ) -> bool {
+        let uniform = self
+            .field
+            .uniform()
+            .map(|e| [self.mob * e[0], self.mob * e[1], self.mob * e[2]]);
+        let mut noise = [0.0; 3 * CHUNK];
+        let mut drift = [[0.0; 3]; CHUNK];
+        let n = xs.len();
+        let mut removed = false;
+        for start in (0..n).step_by(CHUNK) {
+            let end = (start + CHUNK).min(n);
+            let len = end - start;
+            rng.fill_normal(&mut noise[..3 * len]);
+            match uniform {
+                Some(d) => drift[..len].fill(d),
+                None => {
+                    // One dynamic call per chunk; the loop inside is statically dispatched.
+                    self.field.field_batch(
+                        &xs[start..end],
+                        &ys[start..end],
+                        &zs[start..end],
+                        &mut drift[..len],
+                    );
+                    for d in &mut drift[..len] {
+                        *d = [self.mob * d[0], self.mob * d[1], self.mob * d[2]];
+                    }
+                }
+            }
+            debug_assert!(
+                drift[..len].iter().flatten().all(|v| v.is_finite()),
+                "electric field returned a non-finite value"
+            );
+            let sigma = self.sigma;
+            for j in 0..len {
+                let i = start + j;
+                let p = [xs[i], ys[i], zs[i]];
+                let q = [
+                    p[0] + drift[j][0] + sigma * noise[3 * j],
+                    p[1] + drift[j][1] + sigma * noise[3 * j + 1],
+                    p[2] + drift[j][2] + sigma * noise[3 * j + 2],
+                ];
+                let r = fate(resolve_step(geom, p, q)).unwrap_or_else(|| {
+                    removed = true;
+                    [f64::NAN; 3]
+                });
+                xs[i] = r[0];
+                ys[i] = r[1];
+                zs[i] = r[2];
+            }
+        }
+        removed
+    }
+}
+
+/// Removes particles marked as removed (NaN x), keeping the others in order.
+fn compact([xs, ys, zs]: [&mut Vec<f64>; 3]) {
+    let mut w = 0;
+    for r in 0..xs.len() {
+        if !xs[r].is_nan() {
+            xs[w] = xs[r];
+            ys[w] = ys[r];
+            zs[w] = zs[r];
+            w += 1;
+        }
+    }
+    xs.truncate(w);
+    ys.truncate(w);
+    zs.truncate(w);
 }
 
 impl<G: Geometry> Simulation for ParticleSim<G> {
     fn step(&mut self, n: usize) {
         for _ in 0..n {
-            if self.x.is_empty() {
+            if self.x.is_empty() && self.ex.is_empty() {
                 break;
             }
             self.step_once();
@@ -655,6 +745,120 @@ mod tests {
         assert!(s.windows(2).all(|w| w[0].0 < w[1].0 && w[0].1 >= w[1].1));
         assert_eq!(s.last().unwrap().1, sim.survival_fraction());
         assert_eq!(sim.positions_xyz().len(), 3 * sim.n_alive());
+    }
+
+    /// Free space where everything below z = 0 counts as escaped and the plane z = −1
+    /// absorbs.
+    #[derive(Clone, Copy)]
+    struct Ledge;
+    impl Geometry for Ledge {
+        fn sdf(&self, p: Vec3) -> f64 {
+            -1.0 - p[2]
+        }
+        fn absorbs(&self, _b: Vec3) -> bool {
+            true
+        }
+        fn escaped(&self, p: Vec3) -> bool {
+            p[2] < 0.0
+        }
+        fn release_point(&self) -> Vec3 {
+            [0.0, 0.0, 0.05]
+        }
+        fn bounds(&self) -> (Vec3, Vec3) {
+            (
+                [f64::NEG_INFINITY, f64::NEG_INFINITY, -1.0],
+                [f64::INFINITY; 3],
+            )
+        }
+    }
+
+    #[test]
+    fn escaped_particles_are_timed_once_and_keep_moving() {
+        let params = ParticleParams {
+            dt: 1e-3,
+            ..Default::default()
+        };
+        let mut sim = ParticleSim::new(Ledge, params, 2).with_field(UniformField([0.0, 0.0, -2.0]));
+        let n = 1000;
+        sim.release(n);
+        let mut max_moving = 0;
+        while sim.n_alive() > 0 {
+            sim.step(20);
+            sim.for_each_position(|p| assert!(p[2] >= 0.0));
+            sim.for_each_escaped_position(|p| assert!(p[2] > -1.0));
+            assert_eq!(sim.n_alive() + sim.exit_times().len(), n);
+            assert!(sim.n_escaped_moving() <= sim.exit_times().len());
+            max_moving = max_moving.max(sim.n_escaped_moving());
+        }
+        assert!(
+            max_moving > n / 2,
+            "only {max_moving} escaped particles moving"
+        );
+        let t = sim.passage_time();
+        assert!(t <= sim.time_ms() && t > sim.time_ms() - 20.0 * params.dt);
+        assert_eq!(sim.survival_curve().last().unwrap(), &(t, 0.0));
+        // The escaped particles keep moving (and are absorbed at z = −1) without adding
+        // survival samples or exits.
+        let samples = sim.survival_curve().len();
+        while sim.n_escaped_moving() > 0 {
+            sim.step(100);
+        }
+        assert!(sim.time_ms() > t);
+        assert_eq!(
+            (sim.passage_time(), sim.survival_curve().len()),
+            (t, samples)
+        );
+        assert_eq!(sim.exit_times().len(), n);
+    }
+
+    #[test]
+    fn last_exit_is_always_sampled() {
+        // Long enough that the survival buffer has been thinned and is sampled sparsely.
+        let params = ParticleParams {
+            d: 1e-16,
+            dt: 1e-3,
+            ..Default::default()
+        };
+        // The buffer fills at step 4094; an exit at 4093 is the sample that fills it.
+        for steps in 4090..4100 {
+            let mut sim = ParticleSim::new(Ledge, params, 4);
+            sim.release(1);
+            // Falls through z = 0 at exactly step `steps`; the noise is negligible.
+            let v = 0.05 / (steps as f64 - 0.5);
+            sim.set_field(UniformField([0.0, 0.0, -v / params.mobility_dt()]));
+            while sim.n_alive() > 0 {
+                sim.step_once();
+            }
+            assert!(sim.survival_every > 1);
+            assert_eq!(
+                sim.survival_curve().last().unwrap(),
+                &(sim.passage_time(), 0.0)
+            );
+        }
+    }
+
+    #[test]
+    fn escaped_particles_move_once_per_step() {
+        // No noise to speak of: every particle falls by the same drift each step.
+        let params = ParticleParams {
+            d: 1e-12,
+            dt: 1e-3,
+            ..Default::default()
+        };
+        let drift = 0.01;
+        let mut sim = ParticleSim::new(Ledge, params, 6).with_field(UniformField([
+            0.0,
+            0.0,
+            -drift / params.mobility_dt(),
+        ]));
+        sim.release(10);
+        for k in 1..=20 {
+            sim.step_once();
+            let z = 0.05 - k as f64 * drift;
+            sim.for_each_position(|p| assert!((p[2] - z).abs() < 1e-6));
+            sim.for_each_escaped_position(|p| assert!((p[2] - z).abs() < 1e-6, "step {k}: {p:?}"));
+        }
+        assert_eq!(sim.n_escaped_moving(), 10);
     }
 
     // ---- First-passage tests. These run long simulations; CI runs tests in release mode. ----
