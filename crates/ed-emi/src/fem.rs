@@ -169,9 +169,10 @@ impl Stiffness {
     }
 }
 
-/// Aggregates for [`ed_core::linalg::TwoLevel`]: one per (x-plane, subdomain), numbered plane by plane.
+/// Aggregates for [`ed_core::linalg::TwoLevel`]: one per (x-plane, subdomain), numbered
+/// plane by plane. Needs a grid mesh.
 pub fn plane_aggregates(mesh: &Mesh) -> Vec<u32> {
-    let nx = mesh.axes[0].len();
+    let nx = mesh.grid.as_ref().expect("a grid mesh").axes[0].len();
     let stride = mesh.n_cells as u32 + 1;
     let mut agg: Vec<u32> = (0..mesh.n_dofs())
         .map(|d| (mesh.dof_vertex[d] % nx as u32) * stride + mesh.dof_tag[d] as u32)
@@ -266,7 +267,7 @@ mod tests {
         let ones = vec![1.0; mesh.tets.len()];
         k.assemble(&ones, &mesh.lumped_volume, &[], &mut a);
         let u = |p: [f64; 3]| (PI * p[0]).cos() * (PI * p[1]).cos() * (PI * p[2]).cos();
-        let pos = |d: usize| mesh.vertex_position(mesh.dof_vertex[d] as usize);
+        let pos = |d: usize| mesh.dof_position(d);
         let b: Vec<f64> = (0..mesh.n_dofs())
             .map(|d| mesh.lumped_volume[d] * (3.0 * PI * PI + 1.0) * u(pos(d)))
             .collect();
