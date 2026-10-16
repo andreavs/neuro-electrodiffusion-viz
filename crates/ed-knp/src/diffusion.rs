@@ -3,9 +3,9 @@
 use crate::Model;
 use ed_core::linalg::{CgOptions, DiffusionOperator, LinearOperator, Multigrid, NullSpace, Pcg};
 
-/// RMS residual, in mM, at which a solve stops. The conservative correction that follows
-/// shrinks the remaining error by another factor of the Jacobi contraction (≲ 0.1), and
-/// solver errors never break conservation.
+/// RMS residual, in mM, at which a solve stops. Solver errors never break conservation: the
+/// conservative correction that follows turns any approximate solution into a flux-form
+/// update (and on the Jacobi path also shrinks the error by the contraction factor ≲ 0.1).
 const TOL: f64 = 1e-8;
 
 /// How a species' system is solved. When `1/(Δt D̃)` dominates the off-diagonal sum (the
@@ -46,8 +46,11 @@ impl Diffusion {
     pub fn set_dt(&mut self, m: &Model, dt: f64) {
         let g = m.grid;
         self.dt = dt;
-        // Upper bound on the off-diagonal row sum of −∇² (Dirichlet ghosts included).
-        let offdiag: f64 = (0..3).map(|a| 4.0 / (g.h[a] * g.h[a])).sum();
+        // Off-diagonal row sum of −∇² (Dirichlet ghosts only add to the diagonal).
+        let offdiag: f64 = (0..3)
+            .filter(|&a| g.n[a] > 1)
+            .map(|a| 2.0 / (g.h[a] * g.h[a]))
+            .sum();
         self.systems =
             m.d.iter()
                 .map(|&d| {
@@ -115,7 +118,8 @@ impl Diffusion {
                     }
                 }
                 Solver::Multigrid(mg) => {
-                    self.pcg.solve(op, mg, b, c, &opts);
+                    let stats = self.pcg.solve(op, mg, b, c, &opts);
+                    debug_assert!(stats.converged, "diffusion solve: {stats:?}");
                     residual(c, r);
                 }
             }

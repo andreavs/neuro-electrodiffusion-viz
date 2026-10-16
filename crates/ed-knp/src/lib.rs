@@ -8,7 +8,8 @@
 //! The electroneutral drift that couples the species through the KNP potential is added on
 //! top of this step in a follow-up.
 //!
-//! Sources and sinks are per tissue volume and scaled by 1/α.
+//! Sources are amounts released into the tissue; the extracellular concentration rises by
+//! 1/α times the amount per cell volume.
 
 use ed_core::constants::T_DEFAULT;
 use ed_core::ions::{self, IonSpecies};
@@ -36,11 +37,11 @@ pub struct KnpConfig {
     pub tortuosity: f64,
     /// Volume fraction α: sources are scaled by 1/α.
     pub porosity: f64,
-    /// Temperature (K).
+    /// Temperature (K), for ψ = RT/F in the potential (follow-up).
     pub temperature: f64,
     /// Time step (ms).
     pub dt: f64,
-    /// Outer boundary: `Dirichlet` (baseline concentrations, φ = 0) or `Neumann` (no flux).
+    /// Outer boundary: `Dirichlet` (baseline concentrations) or `Neumann` (no flux).
     /// Axes with a single cell always get no-flux faces.
     pub boundary: Boundary,
 }
@@ -77,7 +78,7 @@ pub(crate) struct Model {
     baseline: Vec<f64>,
 }
 
-/// Electroneutral KNP solver on a uniform grid. Fields are flat, x fastest.
+/// KNP tissue solver on a uniform grid (diffusion stage). Fields are flat, x fastest.
 pub struct KnpSolver {
     model: Model,
     dt: f64,
@@ -101,6 +102,10 @@ impl KnpSolver {
             "grid needs a positive size and at least one cell per axis"
         );
         assert!(cfg.tortuosity > 0.0 && cfg.porosity > 0.0 && cfg.temperature > 0.0);
+        assert!(
+            cfg.species.iter().all(|s| s.d >= 0.0),
+            "negative diffusion coefficient"
+        );
         let h = [0, 1, 2].map(|a| cfg.size[a] / cfg.n[a] as f64);
         let grid = Grid::new_3d(cfg.n, h);
         let len = grid.len();
@@ -148,14 +153,6 @@ impl KnpSolver {
         assert!(dt > 0.0, "time step must be positive");
         self.dt = dt;
         self.diffusion.set_dt(&self.model, dt);
-    }
-
-    pub fn dt(&self) -> f64 {
-        self.dt
-    }
-
-    pub fn num_species(&self) -> usize {
-        self.c.len()
     }
 
     /// Concentration of species `k` (mM).

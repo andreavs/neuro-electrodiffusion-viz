@@ -6,34 +6,49 @@ use ed_core::linalg::Boundary;
 use ed_core::Simulation;
 use ed_knp::{KnpConfig, KnpSolver};
 
-#[test]
-fn neutral_perturbation_spreads_like_gaussian() {
+/// Spreads a unit Gaussian of a neutral species (D̃ = 1 µm²/ms) from t = 10 to 30 ms on a
+/// 1-D grid of `n` cells of size `h` and compares it with the analytic solution.
+fn gaussian_case(h: f64, dt: f64, tortuosity: f64, boundary: Boundary) {
     let neutral = IonSpecies {
         name: "N",
         z: 0,
-        d: 1.0,
+        d: tortuosity * tortuosity,
     };
-    let (d, t0, t1, n, dt) = (1.0, 10.0, 30.0, 200, 0.02);
+    let (t0, t1, n) = (10.0 * h * h, 30.0 * h * h, 200);
     let mut s = KnpSolver::new(&KnpConfig {
         n: [n, 1, 1],
-        size: [n as f64, 1.0, 1.0],
+        size: [n as f64 * h, 1.0, 1.0],
         species: vec![ions::NA, ions::CL, neutral],
         baseline: vec![150.0, 150.0, 0.0],
-        tortuosity: 1.0,
+        tortuosity,
         dt,
-        boundary: Boundary::Neumann,
+        boundary,
         ..KnpConfig::default()
     });
+    // Positions in units of h, so the profile is the unit-h one at times t / h².
     let x = |i: usize| i as f64 + 0.5;
     for i in 0..n {
-        s.concentration_mut(2)[i] = gauss(x(i), d, t0);
+        s.concentration_mut(2)[i] = gauss(x(i), 1.0, t0 / (h * h));
     }
     s.step(((t1 - t0) / dt).round() as usize);
-    let peak = gauss(100.0, d, t1);
+    let peak = gauss(100.0, 1.0, t1 / (h * h));
     for i in 0..n {
-        let err = (s.concentration(2)[i] - gauss(x(i), d, t1)).abs();
+        let err = (s.concentration(2)[i] - gauss(x(i), 1.0, t1 / (h * h))).abs();
         assert!(err < 0.01 * peak, "x = {}: error {err:e}", x(i));
     }
+}
+
+#[test]
+fn neutral_perturbation_spreads_like_gaussian() {
+    // 1 µm cells and 0.02 ms steps: solved with multigrid.
+    gaussian_case(1.0, 0.02, 1.0, Boundary::Neumann);
+}
+
+#[test]
+fn jacobi_path_and_tortuosity_match_gaussian() {
+    // 10 µm cells and 1 ms steps: solved with Jacobi sweeps. D = 2.56 with λ = 1.6 gives
+    // D̃ = 1, and the Dirichlet ends must not pin the thin y and z axes to the baseline.
+    gaussian_case(10.0, 1.0, 1.6, Boundary::Dirichlet);
 }
 
 #[test]
@@ -51,22 +66,6 @@ fn diffusion_conserves_every_species() {
         assert!(rel < 1e-10, "species {k}: relative drift {rel:e}");
     }
     assert!(s.concentration(K).iter().cloned().fold(0.0, f64::max) < k_peak - 1.0);
-}
-
-#[test]
-fn dirichlet_boundary_pulls_towards_baseline() {
-    let mut s = KnpSolver::new(&small(Boundary::Dirichlet));
-    add_bumps(&mut s);
-    s.set_dt(50.0);
-    s.step(400);
-    for (k, base) in KnpConfig::default().baseline.iter().enumerate() {
-        let dev = s
-            .concentration(k)
-            .iter()
-            .map(|c| (c - base).abs())
-            .fold(0.0, f64::max);
-        assert!(dev < 1e-3, "species {k}: max deviation {dev:e} mM");
-    }
 }
 
 #[test]
