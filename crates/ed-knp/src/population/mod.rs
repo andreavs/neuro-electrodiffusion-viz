@@ -28,7 +28,9 @@
 //! `h_min` while spiking and `h_max` at rest or in depolarisation block, so a quiet neuron
 //! costs one or two updates per call. Both schemes are stable at any step size, but frozen
 //! gates over a long step damp out spike initiation, so where the Na⁺ feedback is strong (near
-//! threshold) the step is also held to a quarter of the Na⁺ activation time. Gating functions
+//! threshold) the step is also held to a quarter of the Na⁺ activation time. Steps are never
+//! rejected: the controller only sets the next step from the last change of V, and the
+//! threshold cap is what resolves the spike upstroke. Gating functions
 //! come from a table in V (linear interpolation, 0.05 mV spacing), as in NEURON.
 //!
 //! Outputs, per compartment: mean Na⁺, K⁺, X⁻ (Cl⁻) and capacitive currents over the last
@@ -258,13 +260,15 @@ impl Population {
                         slope += p.g_na_bar * 3.0 * mi * mi * r[DM_INF] * hg;
                     }
                     let feedback = -self.scale[s] * slope * (v[s] - e[s][0]);
-                    let total: f64 = g[s].iter().sum::<f64>() + ga;
-                    if feedback > EXCITABLE * total {
+                    if feedback > EXCITABLE * (g[s].iter().sum::<f64>() + ga) {
                         let tau = if s == 0 { 1.0 / r[M_SUM] } else { NAP_TAU };
                         h = h.min(TAU_FRACTION * tau);
                     }
                 }
-                let h = h.max(p.h_min).min(dt - t);
+                // The last step may be cut short to end on dt; the growth limit below still
+                // refers to the planned step, so a short remainder does not shrink the next one.
+                let planned = h.max(p.h_min);
+                let h = planned.min(dt - t);
                 // Backward Euler: (C/h + G + g_a) V' − g_a V'_other = C/h V + Σ g E − P.
                 let mut a = [0.0; 2];
                 let mut b = [0.0; 2];
@@ -292,7 +296,7 @@ impl Population {
                 self.n[i] = rl(n, r[N_INF], r[N_SUM]);
                 let dv = (vn[0] - v[0]).abs().max((vn[1] - v[1]).abs());
                 let next = if dv > 0.0 { p.v_tol * h / dv } else { p.h_max };
-                self.h_next[i] = next.min(2.0 * h).clamp(p.h_min, p.h_max);
+                self.h_next[i] = next.min(2.0 * planned).clamp(p.h_min, p.h_max);
                 v = vn;
                 t += h;
                 substeps += 1;
@@ -309,6 +313,10 @@ impl Population {
                 self.na_i[c] -= self.i_na[c] * to_mm;
                 self.k_i[c] -= self.i_k[c] * to_mm;
                 self.cl_i[c] += self.i_x[c] * to_mm;
+                debug_assert!(
+                    self.na_i[c] > 0.0 && self.k_i[c] > 0.0 && self.cl_i[c] > 0.0,
+                    "intracellular concentration of compartment {c} went negative: step too long"
+                );
             }
         }
         self.substeps = substeps;
