@@ -78,9 +78,48 @@ Constants: R = 8.314 J/(K mol), F = 9.648·10⁴ C/mol, T = 300 K.
 - Stimulus: synaptic conductance g_syn = 4 mS/cm² with time constant 2 ms on part of an axon.
 - Time steps: PDE Δt = 0.1 ms, membrane ODE substeps Δt/25.
 - Geometry: bundle of unmyelinated axons modelled as rectangular blocks inside an ECS box.
-- Numerics (this repo): the paper used mortar FEM in FEniCS. Here we use a voxel finite-volume
-  discretisation where each voxel is tagged by cell id (0 = ECS). Rectangular axons align with
-  the grid exactly; membrane faces are the faces between differently tagged voxels.
+- Geometry (paper): Ω = [0, 400] × [0, 1.4] × [0, 1.4] µm with 9 axons of 390 × 0.2 × 0.2 µm,
+  0.1 µm apart; centre axon A at [5, 395] × [0.6, 0.8]². Closed outer boundary for all ions.
+- Numerics (this repo, `crates/ed-emi`): P1 finite elements, following the paper's mortar scheme
+  (which used FEniCS + MUMPS) with simplifications for speed:
+  - Mesh (`mesh.rs`): a rectilinear grid whose planes include every cell face (spacing ≤
+    `max_h` per axis), each hex split into 6 Kuhn tetrahedra. Ω_e and each Ω_i get their
+    own P1 DOFs, so membrane vertices carry one DOF per side and the meshes share facets on Γ.
+  - I_M lives in the P1 interface space Q_h with a lumped interface mass, so its DOFs are the
+    membrane vertices and it can be eliminated: backward Euler on (29) gives
+    I_M = (C_M/Δt)(φ_i − φ_e − φ_M*) at each membrane vertex (plus the implicit leak current for
+    passive membranes), a Robin-type coupling between the two DOFs. Volume mass matrices are
+    lumped too (an M-matrix for diffusion; the drift and membrane terms are explicit, so a
+    step too large for the currents can still make a concentration negative, which `step`
+    reports). Weighted P1 stiffness matrices (`fem.rs`) are
+    reassembled in place each step from precomputed element edge coefficients.
+  - Time step (backward Euler, Δt = 0.1 ms; implicit because the coupled system is stiff):
+    1. Membrane ODE step (HH only): gates and φ_M with I_M = 0 over 5 substeps (exponential
+       update for φ_M, Rush-Larsen for the gates, stable for any substep; the paper used 25
+       forward Euler substeps), giving φ_M* and the per-ion channel currents averaged exactly
+       over the step (so the ions moved match the capacitor discharge). Passive membranes skip it and
+       put the leak currents implicitly into step 2, as the paper does (eq. 30).
+    2. Potential: one SPD system for all φ DOFs, the charge equations (27)-(28) with σ and the
+       diffusion-current term from [k]^{n−1}, plus a charge-correction term M Σ_k z_k [k]^{n−1}/Δt
+       that pulls the bulk back to electroneutrality. Closed boundary ⇒ constant null space.
+    3. Concentrations: per species, (M/Δt + D K)[k]^n = M [k]^{n−1}/Δt − drift(φ^n, [k]^{n−1})
+       + membrane fluxes (I_ch^k + α_r^k (I_M − I_ch))/(F z_k), i.e. the paper's linearised flux.
+    Steps 2-3 decouple the paper's monolithic solve so each system is SPD. Each is solved as a
+    warm-started increment with PCG (relative tolerance 1e-2 of the step's change) and a
+    two-level preconditioner (Gauss-Seidel plus one aggregate per x-plane and subdomain, which
+    captures the weak coupling along the axons and between subdomains). A per-subdomain
+    correction keeps ion amounts exactly consistent with the membrane fluxes.
+  - Default geometry (`MeshSpec::default_bundle`): the paper's 3×3 cross-section with 200 µm
+    axons on a 5 µm × ≤0.3 µm grid (≈4 k DOFs per field, ≈1.5 k membrane nodes). Native release
+    build: ≈5 ms per step, ≈20 simulated ms per wall second
+    (`cargo run --release -p ed-emi --example bench_step`). Results match a 0.1 µm cross-section
+    grid to plotting accuracy.
+  - Validation (crates/ed-emi/tests): rest stays at rest; a single axon's AP propagates at
+    ≈0.2 m/s, within 3% of a converged 1-D HH cable with the same membrane and r_i + r_e
+    (at Δt = 0.1 ms it is ≈5% slower, as expected for first-order time stepping; 0.17 m/s
+    on the 390 µm paper bundle); [K]_e rises near the active membrane; charge is conserved
+    exactly, each ion amount within the membrane-capacitor charge, and the bulk stays neutral
+    to < 0.01 mM; a passive axon matches cable theory (λ = sqrt(r_m/(r_i + r_e)) ≈ 95 µm) to 2%.
 
 ## Scale 3: Brownian electrodiffusion (Publication 3)
 
