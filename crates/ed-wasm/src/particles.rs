@@ -38,7 +38,9 @@ pub struct ParticlesSim {
     field: FieldKind,
     /// Head-minus-base potential drop, mV; positive pushes cations out.
     delta_v: f64,
-    n_reference: usize,
+    seed: u64,
+    /// Releases so far; varies the reference population's random stream.
+    releases: u64,
 }
 
 #[wasm_bindgen]
@@ -54,7 +56,8 @@ impl ParticlesSim {
             reference: None,
             field: FieldKind::Off,
             delta_v: 0.0,
-            n_reference: 0,
+            seed: u64::from(seed),
+            releases: 0,
         })
     }
 
@@ -62,13 +65,18 @@ impl ParticlesSim {
     /// the neck ("neck") or along the whole spine height ("uniform"). Takes effect from the
     /// next step; call [`ParticlesSim::release`] to restart the statistics.
     pub fn set_field(&mut self, kind: &str, delta_v_mv: f64) -> Result<(), JsError> {
-        if !delta_v_mv.is_finite() {
-            return Err(js("field strength must be finite".into()));
+        if delta_v_mv.is_nan() || delta_v_mv.abs() > MAX_DROP_MV {
+            return Err(js(format!(
+                "potential drop must be within ±{MAX_DROP_MV} mV"
+            )));
         }
         self.field = FieldKind::parse(kind).map_err(js)?;
         self.delta_v = delta_v_mv;
         let field = self.make_field();
         self.sim.set_field(BoxedField(field));
+        if !self.has_field() {
+            self.reference = None;
+        }
         Ok(())
     }
 
@@ -82,16 +90,17 @@ impl ParticlesSim {
     }
 
     /// Restarts the experiment: `n` ions at the head centre, plus `n_reference` zero-field
-    /// ions if a field is on.
+    /// ions if a field is on (switching the field on later adds no reference until the
+    /// next release).
     pub fn release(&mut self, n: usize, n_reference: usize) -> Result<(), JsError> {
         if n > ed_particles::sim::MAX_PARTICLES || n_reference > ed_particles::sim::MAX_PARTICLES {
             return Err(js("too many particles".into()));
         }
         self.sim.release(n);
-        self.n_reference = n_reference;
+        self.releases += 1;
         self.reference = (self.has_field() && n_reference > 0).then(|| {
-            // Fixed seed: an independent stream from the main population's.
-            let seed = 0x9E37_79B9_7F4A_7C15;
+            // A stream independent of the main population's, different for every release.
+            let seed = self.seed ^ 0x9E37_79B9_7F4A_7C15 ^ (self.releases << 32);
             let mut r = ParticleSim::new(self.geom, self.sim.params(), seed);
             r.release(n_reference);
             r
@@ -99,12 +108,13 @@ impl ParticlesSim {
         Ok(())
     }
 
-    /// Advances both populations by up to `n` steps; stops early once every main-population
-    /// ion has escaped. Returns the steps taken.
+    /// Advances both populations by up to `n` steps; a population stops once all its ions
+    /// have escaped. Returns the steps taken (0 when both are empty).
     pub fn step(&mut self, n: usize) -> usize {
         let mut taken = 0;
-        while taken < n && self.sim.n_alive() > 0 {
-            self.sim.step_once();
+        while taken < n && (self.sim.n_alive() > 0 || self.reference_alive() > 0) {
+            // `step` skips an empty population, so its clock stops at its last exit.
+            self.sim.step(1);
             if let Some(r) = &mut self.reference {
                 r.step(1);
             }
@@ -113,8 +123,10 @@ impl ParticlesSim {
         taken
     }
 
+    /// Simulated time of whichever population is still running, ms.
     pub fn time_ms(&self) -> f64 {
-        self.sim.time_ms()
+        let r = self.reference.as_ref().map_or(0.0, |r| r.time_ms());
+        self.sim.time_ms().max(r)
     }
     pub fn n_alive(&self) -> usize {
         self.sim.n_alive()
@@ -127,8 +139,11 @@ impl ParticlesSim {
     }
 
     /// Interleaved xyz (µm) of the live ions. A fresh array each call.
-    pub fn positions(&mut self) -> Vec<f32> {
-        self.sim.positions_xyz().to_vec()
+    pub fn positions(&self) -> Vec<f32> {
+        let mut out = Vec::with_capacity(3 * self.sim.n_alive());
+        self.sim
+            .for_each_position(|p| out.extend([p[0] as f32, p[1] as f32, p[2] as f32]));
+        out
     }
 
     /// Per live ion: 1 in the head, 0 in the neck (same order as `positions`).
@@ -152,8 +167,10 @@ impl ParticlesSim {
             .unwrap_or_default()
     }
 
-    /// Exit-time histogram over [0, t_max) ms as fractions of the released ions.
+    /// Exit-time histogram with `bins` equal bins over [0, t_max) ms (later exits land in the
+    /// last bin), as the fraction of released ions per bin.
     pub fn histogram(&self, reference: bool, bins: usize, t_max: f64) -> Vec<f32> {
+        let bins = bins.min(MAX_BINS);
         let Some(s) = self.population(reference) else {
             return vec![0.0; bins];
         };
@@ -180,7 +197,7 @@ impl ParticlesSim {
     /// to the top of the head (r = 0), as interleaved pairs in µm. Revolve it about z to
     /// draw the surface.
     pub fn profile(&self, segments: usize) -> Vec<f32> {
-        spine_profile(&self.geom, segments.max(4))
+        spine_profile(&self.geom, segments.clamp(4, MAX_BINS))
             .into_iter()
             .flat_map(|(r, z)| [r as f32, z as f32])
             .collect()
@@ -196,6 +213,10 @@ impl ParticlesSim {
 }
 
 impl ParticlesSim {
+    fn reference_alive(&self) -> usize {
+        self.reference.as_ref().map_or(0, |r| r.n_alive())
+    }
+
     fn has_field(&self) -> bool {
         self.field != FieldKind::Off && self.delta_v != 0.0
     }
@@ -234,6 +255,10 @@ impl ElectricField for BoxedField {
         self.0.uniform()
     }
 }
+
+/// Bounds on JS-supplied sizes and fields, so bad input errors instead of aborting the module.
+const MAX_BINS: usize = 4096;
+const MAX_DROP_MV: f64 = 1000.0;
 
 fn js(msg: String) -> JsError {
     JsError::new(&msg)
@@ -336,17 +361,38 @@ mod tests {
         assert!(parse_geometry("cube").is_err());
         assert!(checked_params(0.0).is_err());
         assert!(FieldKind::parse("sideways").is_err());
+        assert_eq!(s.histogram(false, usize::MAX, 1.0).len(), MAX_BINS);
     }
 
     #[test]
     fn outward_field_empties_the_spine_faster() {
-        let run = |dv: f64| {
-            let mut s = ParticlesSim::new("sharp", 1e-3, 5).unwrap();
-            s.set_field("uniform", dv).unwrap();
-            s.release(400, 0).unwrap();
-            s.step(3000);
-            s.n_alive()
-        };
-        assert!(run(40.0) < run(-40.0));
+        for kind in ["uniform", "neck"] {
+            let run = |dv: f64| {
+                let mut s = ParticlesSim::new("sharp", 1e-3, 5).unwrap();
+                s.set_field(kind, dv).unwrap();
+                s.release(400, 0).unwrap();
+                s.step(3000);
+                s.n_alive()
+            };
+            assert!(run(40.0) < run(-40.0), "{kind}");
+        }
+    }
+
+    #[test]
+    fn reference_keeps_running_after_the_main_population_has_escaped() {
+        let mut s = ParticlesSim::new("sharp", 2e-3, 7).unwrap();
+        s.set_field("uniform", 200.0).unwrap();
+        s.release(50, 50).unwrap();
+        while s.step(1000) > 0 {}
+        assert_eq!((s.n_alive(), s.reference_alive()), (0, 0));
+        assert_eq!(s.mfpt(true)[2], 50.0);
+        assert!(
+            s.time_ms() > s.sim.time_ms(),
+            "the zero-field ions take longer"
+        );
+        assert!(s.mfpt(true)[0] > s.mfpt(false)[0]);
+        // Turning the field off drops the reference.
+        s.set_field("off", 0.0).unwrap();
+        assert!(!s.has_reference());
     }
 }
