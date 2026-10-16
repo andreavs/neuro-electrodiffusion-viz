@@ -7,15 +7,19 @@
 //!   starts and support for the singular pure-Neumann case.
 //! - [`Jacobi`] and [`Multigrid`]: preconditioners. The geometric multigrid V-cycle is
 //!   the fast option for structured grids.
+//! - [`BandCholesky`]: banded direct factorisation, for long thin grids or as a
+//!   preconditioner for operators with high-contrast faces that multigrid handles poorly.
 //!
 //! Sign convention: operators are assembled as `A u = -∇·(σ∇u)`, which is symmetric
 //! positive (semi-)definite, so `∇·(σ∇u) = g` is solved as `A u = -g`.
 
+mod band;
 mod cg;
 mod csr;
 mod grid;
 mod multigrid;
 
+pub use band::BandCholesky;
 pub use cg::{CgOptions, CgStats, Identity, Jacobi, NullSpace, Pcg};
 pub use csr::CsrMatrix;
 pub use grid::{Boundary, BoundaryConditions, DiffusionOperator, Grid, Side};

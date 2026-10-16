@@ -4,14 +4,20 @@ use super::{DiffusionOperator, Grid, LinearOperator, Preconditioner};
 ///
 /// Coarse levels halve every active axis that has an even cell count ≥ 4 (semi-coarsening
 /// otherwise) until a level has at most [`COARSEST_CELLS`] cells. Coarse operators are
-/// rediscretised from the cell-averaged coefficients with the same boundary kinds.
+/// rediscretised from the cell-averaged coefficients with the same boundary kinds. With
+/// explicit face coefficients ([`DiffusionOperator::set_face_sigma`]), a coarse face takes
+/// the mean of the fine faces on it; faces inside a coarse cell drop out, so thin
+/// high-contrast features such as membranes are not represented on coarse levels and CG
+/// needs more iterations.
 /// Restriction averages the children; prolongation injects the parent value. The
 /// smoother is red-black Gauss-Seidel, red-then-black before and black-then-red after the
 /// coarse correction, and the coarsest level uses symmetric sweep pairs, so one V-cycle
 /// is a symmetric operator and can precondition CG.
 ///
 /// The preconditioner keeps its own copy of the operator: call [`update`](Self::update)
-/// after every [`DiffusionOperator::update_sigma`] or [`DiffusionOperator::set_shift`],
+/// after every [`DiffusionOperator::update_sigma`], [`DiffusionOperator::set_shift`] or
+/// [`DiffusionOperator::set_face_sigma`] (face values must already be set when the
+/// multigrid is built),
 /// or CG keeps working but converges more slowly.
 ///
 /// Coarsening needs even cell counts, so grids of size `k·2^m` with small `k` (such as
@@ -67,6 +73,15 @@ impl Multigrid {
             restrict(&g, &cg, f, &parent.shift, &mut shift);
             let mut op = DiffusionOperator::new(cg, *fine.boundary_conditions(), &sigma);
             op.set_shift(&shift);
+            if let Some(ff) = &parent.face_sigma {
+                let mut cf = [
+                    vec![0.0; cg.len()],
+                    vec![0.0; cg.len()],
+                    vec![0.0; cg.len()],
+                ];
+                restrict_faces(&g, &cg, f, ff, &mut cf);
+                op.set_face_sigma([&cf[0], &cf[1], &cf[2]]);
+            }
             ops.push(op);
             factors.push(f);
         }
@@ -104,6 +119,16 @@ impl Multigrid {
         );
         self.ops[0].sigma.copy_from_slice(&fine.sigma);
         self.ops[0].shift.copy_from_slice(&fine.shift);
+        assert_eq!(
+            fine.face_sigma.is_some(),
+            self.ops[0].face_sigma.is_some(),
+            "face coefficients must be set before building the multigrid"
+        );
+        if let (Some(dst), Some(src)) = (&mut self.ops[0].face_sigma, &fine.face_sigma) {
+            for (d, s) in dst.iter_mut().zip(src) {
+                d.copy_from_slice(s);
+            }
+        }
         self.ops[0].recompute();
         for l in 0..self.factors.len() {
             let (head, tail) = self.ops.split_at_mut(l + 1);
@@ -123,6 +148,9 @@ impl Multigrid {
                 &f_op.shift,
                 &mut c_op.shift,
             );
+            if let (Some(ff), Some(cf)) = (&f_op.face_sigma, &mut c_op.face_sigma) {
+                restrict_faces(f_op.grid(), &cg, self.factors[l], ff, cf);
+            }
             c_op.recompute();
         }
     }
@@ -205,6 +233,41 @@ fn restrict(fine: &Grid, coarse: &Grid, f: [usize; 3], src: &[f64], dst: &mut [f
     dst.iter_mut().for_each(|v| *v *= w);
 }
 
+/// Coarse face coefficients: each coarse face (between a coarse cell and its upper
+/// neighbour along an axis) takes the mean of the fine faces that lie on it.
+fn restrict_faces(
+    fine: &Grid,
+    coarse: &Grid,
+    f: [usize; 3],
+    src: &[Vec<f64>; 3],
+    dst: &mut [Vec<f64>; 3],
+) {
+    for (a, dst) in dst.iter_mut().enumerate() {
+        let w = f[a] as f64 / (f[0] * f[1] * f[2]) as f64;
+        coarse.for_each_cell(|ci, cj, ck, c| {
+            let cpos = [ci, cj, ck];
+            if a >= coarse.dim || cpos[a] + 1 >= coarse.n[a] {
+                dst[c] = 0.0;
+                return;
+            }
+            let mut sum = 0.0;
+            for dk in 0..f[2] {
+                for dj in 0..f[1] {
+                    for di in 0..f[0] {
+                        // Only the last child layer along `a` touches the coarse face.
+                        if [di, dj, dk][a] + 1 != f[a] {
+                            continue;
+                        }
+                        let p = [ci * f[0] + di, cj * f[1] + dj, ck * f[2] + dk];
+                        sum += src[a][fine.index(p[0], p[1], p[2])];
+                    }
+                }
+            }
+            dst[c] = sum * w;
+        });
+    }
+}
+
 /// `fine[child] += coarse[parent]`. Coarsening factors are 1 or 2.
 fn prolong_add(fine: &Grid, f: [usize; 3], src: &[f64], dst: &mut [f64]) {
     let (nx, sx) = (fine.n[0], f[0] - 1);
@@ -228,6 +291,54 @@ mod tests {
         let mg = Multigrid::new(&op);
         assert_eq!(mg.levels(), 5);
         assert_eq!(mg.ops.last().unwrap().grid().n, [4, 4, 2]);
+    }
+
+    #[test]
+    fn face_restriction_averages_fine_faces_on_coarse_face() {
+        let fine = Grid::new_2d(4, 4, 1.0, 1.0);
+        let coarse = Grid::new_2d(2, 2, 2.0, 2.0);
+        let mut src = [vec![0.0; 16], vec![0.0; 16], vec![0.0; 16]];
+        // x-faces between i = 1 and i = 2 in rows j = 0, 1 carry 1 and 3.
+        src[0][fine.index(1, 0, 0)] = 1.0;
+        src[0][fine.index(1, 1, 0)] = 3.0;
+        // An interior face of coarse cell 0 must not count.
+        src[0][fine.index(0, 0, 0)] = 100.0;
+        let mut dst = [vec![0.0; 4], vec![0.0; 4], vec![0.0; 4]];
+        restrict_faces(&fine, &coarse, [2, 2, 1], &src, &mut dst);
+        assert_eq!(dst[0][coarse.index(0, 0, 0)], 2.0);
+        assert_eq!(dst[0][coarse.index(1, 0, 0)], 0.0);
+        assert!(dst[1].iter().all(|&v| v == 0.0));
+    }
+
+    #[test]
+    fn preconditions_operator_with_face_coefficients() {
+        use crate::linalg::{CgOptions, Pcg};
+        let grid = Grid::new_3d([16, 16, 8], [1.0; 3]);
+        let mut op = DiffusionOperator::uniform(grid, BoundaryConditions::dirichlet(), 1.0);
+        // A weakly conducting wall between x = 7 and x = 8.
+        let ones = vec![1.0; grid.len()];
+        let mut fx = ones.clone();
+        grid.for_each_cell(|i, _, _, c| {
+            if i == 7 {
+                fx[c] = 1e-3;
+            }
+        });
+        op.set_face_sigma([&ones, &ones, &ones]);
+        let mut mg = Multigrid::new(&op);
+        op.set_face_sigma([&fx, &ones, &ones]);
+        mg.update(&op);
+        let b: Vec<f64> = (0..grid.len()).map(|c| (c as f64 * 0.3).sin()).collect();
+        let mut x = vec![0.0; grid.len()];
+        let stats = Pcg::new(grid.len()).solve(&op, &mut mg, &b, &mut x, &CgOptions::default());
+        assert!(stats.converged && stats.iterations < 30, "{stats:?}");
+        let mut r = vec![0.0; grid.len()];
+        op.apply(&x, &mut r);
+        let err = r
+            .iter()
+            .zip(&b)
+            .map(|(u, v)| (u - v).abs())
+            .fold(0.0, f64::max);
+        assert!(err < 1e-6, "{err}");
     }
 
     #[test]

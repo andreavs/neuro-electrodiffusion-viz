@@ -255,3 +255,46 @@ fn synaptic_conductance_decays_exponentially() {
     assert!((p.synaptic_conductance(0, 1.0) - 4.0).abs() < 1e-12);
     assert!((p.synaptic_conductance(0, 3.0) - 4.0 * (-1.0f64).exp()).abs() < 1e-12);
 }
+
+#[test]
+fn mean_currents_match_capacitive_charge() {
+    let mut p = MembranePatches::new(
+        2,
+        MembraneParams::HODGKIN_HUXLEY,
+        IonConcentrations::KNP_EMI,
+    );
+    p.set_synapse(0, 4.0, 0.0);
+    p.phi_m[1] = -20.0;
+    let n = p.len();
+    let (mut na, mut k, mut cl) = (vec![0.0; n], vec![0.0; n], vec![0.0; n]);
+    let dt = 0.1;
+    for step in 0..30 {
+        let before = p.phi_m.clone();
+        p.advance_with_mean_currents(step as f64 * dt, dt, 25, None, [&mut na, &mut k, &mut cl]);
+        for i in 0..n {
+            let total = na[i] + k[i] + cl[i];
+            let cap = -p.params.c_m * (p.phi_m[i] - before[i]) / dt;
+            assert!(
+                (total - cap).abs() < 1e-9 * cap.abs().max(1.0),
+                "patch {i}, step {step}: {total} vs {cap}"
+            );
+        }
+    }
+    // The synaptic patch fired: Na⁺ carried a large inward current at some point.
+    assert!(p.m[0] > 0.0);
+}
+
+#[test]
+fn mean_currents_leave_state_identical_to_advance() {
+    let mut a = hh_patch();
+    a.set_synapse(0, 4.0, 0.5);
+    let mut b = a.clone();
+    let (mut na, mut k, mut cl) = (vec![0.0], vec![0.0], vec![0.0]);
+    for step in 0..20 {
+        let t = step as f64 * 0.1;
+        a.advance(t, 0.1, 25, None);
+        b.advance_with_mean_currents(t, 0.1, 25, None, [&mut na, &mut k, &mut cl]);
+    }
+    assert_eq!(a.phi_m, b.phi_m);
+    assert_eq!(a.n, b.n);
+}
