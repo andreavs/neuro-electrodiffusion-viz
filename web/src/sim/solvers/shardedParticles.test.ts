@@ -103,13 +103,9 @@ describe('ShardedParticlesSolver', () => {
 
   it('draws at most DISPLAY_MAX ions in total', () => {
     const { solver, flush } = harness({ particles: 1_000_000, field: 'off' });
-    flush();
-    solver.advance(12);
-    flush();
-    solver.advance(12);
+    [flush(), solver.advance(12), flush(), solver.advance(12)];
     const n = solver.frame().fields.find((x) => x.name === 'positions')!.shape[0]!;
-    expect(n).toBeLessThanOrEqual(DISPLAY_MAX + 3);
-    expect(n).toBeGreaterThan(DISPLAY_MAX - 3);
+    expect(Math.abs(n - DISPLAY_MAX)).toBeLessThan(3);
   });
 
   it('drops replies from an earlier release and reports finished runs', () => {
@@ -144,7 +140,7 @@ describe('ShardedParticlesSolver', () => {
     expect(solver.frame().fields.find((x) => x.name === 'profile')).toBeDefined();
   });
 
-  it('clears a shard error on the next release and frees leftover shards', () => {
+  it('clears a shard error on the next release and drops leftover shards', () => {
     const { solver, sims, flush } = harness({ particles: 25_000, field: 'off' });
     flush();
     (solver as unknown as { error: Error }).error = new Error('too many particles');
@@ -152,7 +148,8 @@ describe('ShardedParticlesSolver', () => {
     solver.setParams({ particles: '1000' });
     flush();
     expect(solver.advance(12)).toBe(true);
-    expect(sims.map((s) => s.released)).toEqual([1000, 0, 0]);
+    expect(sims.map((s) => s.released)).toEqual([1000, 8333, 8333]); // 1 and 2 were terminated
+    expect(solver.frame().stats).toMatchObject({ workers: 1, released: 1000 });
   });
 
   it('surfaces shard errors', () => {

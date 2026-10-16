@@ -191,9 +191,8 @@ export class ShardedParticlesSolver implements WorkerSolver {
         nRef: i === 0 ? this.nRef : 0,
       }),
     );
-    // Shards left over from a larger run free their ions; their replies are ignored.
-    for (let i = this.active; i < this.ports.length; i++)
-      this.ports[i]!.post({ type: 'start', gen: this.gen, geometry, dt: Number(this.params.dt), field: 'off', dv: 0, n: 0, nRef: 0 });
+    // Shards left over from a larger run go, with their memory (a wasm heap never shrinks).
+    for (const p of this.ports.splice(this.active)) p.terminate();
   }
 
   private addPort(): void {
@@ -210,6 +209,7 @@ export class ShardedParticlesSolver implements WorkerSolver {
 
   private receive(index: number, msg: FromShard): void {
     if (msg.type === 'error') {
+      if (msg.gen !== undefined && msg.gen !== this.gen) return;
       this.error ??= new Error(`particle shard ${index}: ${msg.message}`);
       this.wake();
       return;
@@ -245,12 +245,13 @@ export class ShardedParticlesSolver implements WorkerSolver {
     // The round where the last ion leaves is always sampled, so the curve ends at 0.
     const last = finished(round, this.nRef);
     if ((this.rounds++ % this.survivalEvery === 0 || last) && t > this.survival[this.survival.length - 2]!) {
-      this.survival.push(t, released > 0 ? alive / released : 0);
-      if (this.survival.length / 2 >= SURVIVAL_CAPACITY) {
+      // Thin before pushing, so the newest sample (maybe the last exit) is kept.
+      if (this.survival.length / 2 + 1 >= SURVIVAL_CAPACITY) {
         // Keep t = 0 and every other sample; sample half as often from now on.
         this.survival = this.survival.filter((_, i) => i % 4 < 2);
         this.survivalEvery *= 2;
       }
+      this.survival.push(t, released > 0 ? alive / released : 0);
     }
   }
 

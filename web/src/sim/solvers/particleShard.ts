@@ -66,6 +66,8 @@ export interface ShardState {
 
 export interface ShardError {
   type: 'error';
+  /** Release generation of the message that failed. */
+  gen?: number;
   message: string;
 }
 
