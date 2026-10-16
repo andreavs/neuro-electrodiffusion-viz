@@ -155,7 +155,7 @@ describe('makeParticlesSolver', () => {
   });
 
   it('rebuilds with a dendrite when ions should spread into it', () => {
-    const { solver, sims } = setup();
+    const { solver, sims } = setup({ outlet: 'absorb' });
     expect(sims[0]!.dendrite).toBe(false);
     solver.setParams({ outlet: 'dendrite' });
     expect(sims).toHaveLength(2);
