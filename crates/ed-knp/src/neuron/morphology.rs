@@ -53,13 +53,30 @@ impl Compartment {
     }
 }
 
+fn check_cylinder(start: [f64; 3], end: [f64; 3], d0: f64, d1: f64) {
+    let l = dist(start, end);
+    assert!(
+        l.is_finite() && l > 0.0,
+        "zero or non-finite length {start:?} -> {end:?}"
+    );
+    assert!(
+        d0.is_finite() && d0 > 0.0 && d1.is_finite() && d1 > 0.0,
+        "bad diameter {d0}, {d1}"
+    );
+}
+
 fn dist(a: [f64; 3], b: [f64; 3]) -> f64 {
     ((a[0] - b[0]).powi(2) + (a[1] - b[1]).powi(2) + (a[2] - b[2]).powi(2)).sqrt()
 }
 
 /// Compartments ordered so every parent precedes its children (index 0 is
-/// the root), which is what the Hines solver needs.
-#[derive(Debug, Clone, Default, PartialEq)]
+/// the root), which is what the Hines solver needs; [`validate`](Self::validate)
+/// checks this after editing `compartments` directly.
+///
+/// Electrically, a compartment is a node at its centre coupled to its
+/// parent's node; geometrically a child need not start at its parent's `end`
+/// (basal dendrites leave from the side of the soma).
+#[derive(Debug, Clone, PartialEq)]
 pub struct Morphology {
     pub compartments: Vec<Compartment>,
 }
@@ -67,6 +84,7 @@ pub struct Morphology {
 impl Morphology {
     /// A morphology with a single root compartment.
     pub fn with_root(start: [f64; 3], end: [f64; 3], diam: f64, kind: Kind) -> Self {
+        check_cylinder(start, end, diam, diam);
         Self {
             compartments: vec![Compartment {
                 parent: None,
@@ -86,9 +104,39 @@ impl Morphology {
         self.compartments.is_empty()
     }
 
+    /// Check the tree invariants: exactly one root at index 0, parents
+    /// precede children, finite positive lengths and diameters.
+    pub fn validate(&self) -> Result<(), String> {
+        if self.is_empty() {
+            return Err("empty morphology".into());
+        }
+        for (i, c) in self.compartments.iter().enumerate() {
+            match c.parent {
+                None if i != 0 => return Err(format!("compartment {i} has no parent")),
+                Some(_) if i == 0 => return Err("compartment 0 must be the root".into()),
+                Some(p) if p >= i => return Err(format!("parent {p} of {i} does not precede it")),
+                _ => {}
+            }
+            let (l, d) = (c.length(), c.diam);
+            if !(l.is_finite() && l > 0.0 && d.is_finite() && d > 0.0) {
+                return Err(format!("compartment {i} has length {l} and diameter {d}"));
+            }
+        }
+        Ok(())
+    }
+
+    /// Axial conductance between compartment `i > 0` and its parent, µS:
+    /// `1 / (R_i/2 + R_parent/2)` for axial resistivity `ra` in Ω·cm.
+    pub fn coupling_conductance(&self, i: usize, ra: f64) -> f64 {
+        let c = &self.compartments[i];
+        let p = &self.compartments[c.parent.expect("the root has no parent")];
+        2.0 / (c.axial_resistance(ra) + p.axial_resistance(ra))
+    }
+
     /// Append a straight section from `start` to `end` split into `n` equal
     /// compartments, attached to `parent`, with diameter tapering linearly
-    /// from `d0` to `d1`. Returns the indices of the new compartments,
+    /// from `d0` to `d1` (piecewise constant: each compartment takes its
+    /// midpoint diameter). Returns the indices of the new compartments,
     /// proximal first.
     #[allow(clippy::too_many_arguments)]
     pub fn add_section(
@@ -102,7 +150,8 @@ impl Morphology {
         kind: Kind,
     ) -> std::ops::Range<usize> {
         assert!(parent < self.len(), "parent {parent} does not exist");
-        assert!(n > 0 && d0 > 0.0 && d1 > 0.0);
+        assert!(n > 0, "a section needs at least one compartment");
+        check_cylinder(start, end, d0, d1);
         let first = self.len();
         let lerp = |s: f64| [0, 1, 2].map(|k| start[k] + s * (end[k] - start[k]));
         for j in 0..n {
@@ -119,7 +168,7 @@ impl Morphology {
         first..first + n
     }
 
-    /// Default layer-5-like pyramidal cell, about 1.2 mm from basal tips to
+    /// Default layer-5-like pyramidal cell, about 1.1 mm from basal tips to
     /// apical tuft, soma centred at the origin and the apical axis along +z:
     /// a 30 × 30 µm soma, a tapering 750 µm apical trunk with two obliques and a
     /// three-branch tuft reaching z ≈ 1000 µm, four basal dendrites, and a
@@ -128,10 +177,10 @@ impl Morphology {
         let mut m = Self::with_root([0.0, 0.0, -15.0], [0.0, 0.0, 15.0], 30.0, Kind::Soma);
         let dend = Kind::Dendrite;
         let trunk = m.add_section(0, [0.0, 0.0, 15.0], [0.0, 0.0, 765.0], 4.0, 1.5, 30, dend);
-        // Obliques from the trunk at z ≈ 260 µm and 460 µm.
+        // Obliques from the trunk at z ≈ 290 µm and 490 µm.
         for (k, sx) in [(10, 1.0), (18, -1.0)] {
             let c = m.compartments[trunk.start + k].end;
-            let tip = [c[0] + sx * 140.0, 0.0, c[2] + 50.0];
+            let tip = [c[0] + sx * 140.0, c[1], c[2] + 50.0];
             m.add_section(trunk.start + k, c, tip, 1.0, 0.6, 6, dend);
         }
         // Tuft: three branches fanning out from the top of the trunk.
@@ -150,8 +199,8 @@ impl Morphology {
         }
         m.add_section(
             0,
-            [0.0, 0.0, -10.0],
-            [0.0, 0.0, -110.0],
+            [0.0, 0.0, -15.0],
+            [0.0, 0.0, -115.0],
             1.2,
             1.0,
             10,
@@ -179,6 +228,59 @@ mod tests {
         let top = zs.iter().cloned().fold(f64::MIN, f64::max);
         let bottom = zs.iter().cloned().fold(f64::MAX, f64::min);
         assert!((900.0..1300.0).contains(&(top - bottom)), "{top} {bottom}");
+        assert_eq!(m.validate(), Ok(()));
+        for c in &m.compartments {
+            if let Some(p) = c.parent.filter(|&p| p != 0) {
+                assert_eq!(c.start, m.compartments[p].end);
+            }
+        }
+        let count = |k| m.compartments.iter().filter(|c| c.kind == k).count();
+        assert_eq!(
+            (count(Kind::Soma), count(Kind::Axon), count(Kind::Dendrite)),
+            (1, 10, 104)
+        );
+    }
+
+    #[test]
+    fn validate_and_coupling() {
+        let mut m = Morphology::with_root([0.0; 3], [100.0, 0.0, 0.0], 1.0, Kind::Axon);
+        m.add_section(
+            0,
+            [100.0, 0.0, 0.0],
+            [200.0, 0.0, 0.0],
+            1.0,
+            1.0,
+            1,
+            Kind::Axon,
+        );
+        // Each is 400/π MΩ at 100 Ω·cm; two halves in series give π/400 µS.
+        assert!((m.coupling_conductance(1, 100.0) - std::f64::consts::PI / 400.0).abs() < 1e-12);
+        m.compartments[1].parent = Some(1);
+        assert!(m.validate().is_err());
+        m.compartments[1].parent = None;
+        assert!(m.validate().is_err());
+    }
+
+    #[test]
+    #[should_panic(expected = "does not exist")]
+    fn add_section_rejects_missing_parent() {
+        let mut m = Morphology::with_root([0.0; 3], [1.0, 0.0, 0.0], 1.0, Kind::Soma);
+        m.add_section(1, [0.0; 3], [1.0, 0.0, 0.0], 1.0, 1.0, 1, Kind::Dendrite);
+    }
+
+    #[test]
+    #[should_panic(expected = "zero or non-finite length")]
+    fn add_section_rejects_zero_length() {
+        let mut m = Morphology::with_root([0.0; 3], [1.0, 0.0, 0.0], 1.0, Kind::Soma);
+        m.add_section(
+            0,
+            [1.0, 0.0, 0.0],
+            [1.0, 0.0, 0.0],
+            1.0,
+            1.0,
+            1,
+            Kind::Dendrite,
+        );
     }
 
     #[test]
