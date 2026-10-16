@@ -36,6 +36,7 @@ mod electroneutral;
 pub mod fv;
 pub mod neuron;
 mod sources;
+pub mod tissue;
 
 use diffusion::Diffusion;
 use electroneutral::Projection;
