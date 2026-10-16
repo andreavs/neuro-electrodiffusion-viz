@@ -322,9 +322,14 @@ describe('RunLoop', () => {
     host.runTasks(1);
     expect(advances).toBe(2);
     expect(host.frames()).toHaveLength(posted + 1);
-    // A wake while paused does nothing.
+    // A wake while paused posts a frame (once acked) but schedules no tick.
     l.handle({ type: 'run', running: false });
+    l.handle({ type: 'ack', seq: host.lastFrame().seq }); // posts the paused state
+    l.handle({ type: 'ack', seq: host.lastFrame().seq });
+    const before = host.frames().length;
     wake();
     expect(host.pendingTasks).toBe(0);
+    expect(host.frames()).toHaveLength(before + 1);
+    expect(advances).toBe(2);
   });
 });

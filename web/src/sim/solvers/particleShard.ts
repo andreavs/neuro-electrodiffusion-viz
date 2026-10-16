@@ -79,7 +79,7 @@ export function shardTransferables(s: ShardState): ArrayBuffer[] {
 }
 
 const PROFILE_SEGMENTS = 48;
-/** Steps per wasm call, so the step loop can check the clock. */
+/** Steps per wasm call; the loop runs all requested steps (the coordinator sizes requests). */
 const BATCH = 64;
 
 /** Shard-side state machine, free of Worker APIs; the shard worker is a thin adapter. */
@@ -126,6 +126,7 @@ export class ShardRunner {
   private start(msg: ShardStart): ShardState {
     if (!this.sim || msg.geometry !== this.geometry) {
       this.sim?.free();
+      this.sim = null; // stays null if `create` throws
       this.sim = this.create(msg.geometry, msg.dt, this.seed);
       this.geometry = msg.geometry;
     }
@@ -134,6 +135,7 @@ export class ShardRunner {
     this.sim.release(msg.n, msg.nRef);
     this.gen = msg.gen;
     this.steps = 0;
+    this.bins = 1;
     this.tMax = 1;
     this.msPerStep = 0;
     return this.state(0, true);

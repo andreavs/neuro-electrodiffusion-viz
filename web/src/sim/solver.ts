@@ -20,13 +20,14 @@ export interface WorkerSolver {
    *
    * Return `'wait'` when the work runs elsewhere (e.g. in helper workers) and has not
    * produced anything new yet: the loop then stops ticking until the solver calls the
-   * function passed to {@link WorkerSolver.setWake}.
+   * function passed to {@link WorkerSolver.setWake}. While paused, a wake instead posts a
+   * frame, so `frame()` should include results that arrived since the last `advance`.
    */
   advance(budgetMs: number): void | boolean | 'wait';
   /**
    * Called once after construction with a function that asks the loop for another tick,
-   * for solvers whose `advance` can return `'wait'`. Calls after the solver is replaced
-   * or while paused are ignored.
+   * for solvers whose `advance` can return `'wait'`. Calls after the solver is replaced are
+   * ignored.
    */
   setWake?(wake: () => void): void;
   /** Snapshot of the fields to render. Arrays must be fresh copies (they are transferred). */
