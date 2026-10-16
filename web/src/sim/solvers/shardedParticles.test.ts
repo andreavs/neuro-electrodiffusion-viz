@@ -3,27 +3,43 @@ import { ShardRunner, type FromShard, type ToShard } from './particleShard';
 import type { ParticlesWasm } from './particles';
 import { DISPLAY_MAX, ShardedParticlesSolver, type ShardPort } from './shardedParticles';
 
-/** Each step removes one ion; exit times are recorded so the MFPT is exact. */
+/**
+ * Each step removes one ion; exit times are recorded so the MFPT is exact. With a dendrite,
+ * each escaped ion lingers there until the spine is empty, then one leaves per step.
+ */
 class FakeSim implements ParticlesWasm {
   alive = 0;
   released = 0;
   ref = false;
   time = 0;
+  passage = 0;
+  moving = 0;
   exits: number[] = [];
-  constructor(readonly geometry: string) {}
+  constructor(
+    readonly geometry: string,
+    readonly dendrite = false,
+  ) {}
   set_field = (kind: string, dv: number) => void (this.ref = kind !== 'off' && dv !== 0);
   set_dt() {}
   release(n: number) {
-    [this.alive, this.released, this.time, this.exits] = [n, n, 0, []];
+    [this.alive, this.released, this.time, this.passage, this.moving, this.exits] = [n, n, 0, 0, 0, []];
   }
   step(n: number) {
-    const k = Math.min(n, this.alive);
-    for (let i = 0; i < k; i++) this.exits.push(++this.time);
-    this.alive -= k;
+    let k = 0;
+    for (; k < n && this.alive + this.moving > 0; k++) {
+      this.time++;
+      if (this.alive > 0) {
+        this.alive--;
+        this.exits.push((this.passage = this.time));
+        if (this.dendrite) this.moving++;
+      } else this.moving--;
+    }
     return k;
   }
   time_ms = () => this.time;
+  passage_time_ms = () => this.passage;
   n_alive = () => this.alive;
+  n_in_dendrite = () => this.moving;
   n_released = () => this.released;
   has_reference = () => this.ref;
   positions = () => new Float32Array(3 * this.alive).fill(this.released);
@@ -40,6 +56,8 @@ class FakeSim implements ParticlesWasm {
   profile = () => Float32Array.of(0.1, 0, 0, 1);
   neck_top = () => 1;
   neck_radius = () => 0.1;
+  dendrite_radius = () => (this.dendrite ? 0.45 : 0);
+  dendrite_half_length = () => (this.dendrite ? 3 : 0);
   free() {}
 }
 
@@ -50,8 +68,8 @@ function harness(params: Record<string, string | number>, cores = 5) {
   let wakes = 0;
   const spawn = (index: number): ShardPort => {
     const runner = new ShardRunner(
-      (g) => {
-        const s = new FakeSim(g);
+      (g, d) => {
+        const s = new FakeSim(g, d);
         sims[index] = s;
         return s;
       },
@@ -123,6 +141,32 @@ describe('ShardedParticlesSolver', () => {
     }
     expect(solver.frame().stats).toMatchObject({ alive: 0, escaped: 5000 });
     expect(solver.advance(12)).toBe(false);
+  });
+
+  it('keeps running while escaped ions spread in the dendrite, sampling survival only until the last exit', () => {
+    const { solver, flush } = harness({ particles: 30_000, field: 'off', outlet: 'dendrite' });
+    flush();
+    let guard = 0;
+    let midway: Record<string, number> | undefined;
+    for (let r: boolean | 'wait' = true; r !== false && guard < 10_000; guard++) {
+      r = solver.advance(12);
+      flush();
+      const st = solver.frame().stats!;
+      if (st.alive === 0 && st.inDendrite! > 0) midway ??= st;
+    }
+    // Each shard empties its spine after 10 000 steps, then its dendrite after 10 000 more.
+    expect(midway).toMatchObject({ escaped: 30_000, passageTime: 10_000, dendriteRadius: 0.45, dendriteHalfLength: 3 });
+    const f = solver.frame();
+    expect(f.timeMs).toBe(20_000);
+    expect(f.stats).toMatchObject({ alive: 0, inDendrite: 0, passageTime: 10_000, histTMax: 10_000 });
+    const surv = f.fields.find((x) => x.name === 'survival')!.data;
+    expect(Array.from(surv.slice(-2))).toEqual([10_000, 0]);
+    expect(solver.advance(12)).toBe(false);
+    // Switching back to an absorbing base forgets the dendrite before the shards reply.
+    solver.setParams({ outlet: 'absorb' });
+    expect(solver.frame().stats).toMatchObject({ dendriteRadius: 0, dendriteHalfLength: 0 });
+    flush();
+    expect(solver.frame().stats).toMatchObject({ dendriteRadius: 0, released: 30_000 });
   });
 
   it('stops stepping when the loop stops asking (paused)', () => {
