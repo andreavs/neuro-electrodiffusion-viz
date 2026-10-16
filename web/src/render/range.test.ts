@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { autoRange } from './range';
+import { ExpandingRange, autoRange } from './range';
 import { niceTicks } from './ticks';
 
 describe('autoRange', () => {
@@ -24,5 +24,33 @@ describe('niceTicks', () => {
     const t = niceTicks(0.013, 0.087, 4);
     expect(t[0]).toBeGreaterThanOrEqual(0.013);
     expect(t[t.length - 1]).toBeLessThanOrEqual(0.087);
+  });
+});
+
+describe('ExpandingRange', () => {
+  it('fits the first data exactly, then only grows (with headroom)', () => {
+    const r = new ExpandingRange(0.1);
+    expect(r.empty).toBe(true);
+    expect(r.include(0, 10)).toBe(true);
+    expect([r.min, r.max]).toEqual([0, 10]);
+    expect(r.include(2, 8)).toBe(false);
+    expect([r.min, r.max]).toEqual([0, 10]);
+    expect(r.include(0, 20)).toBe(true);
+    expect(r.min).toBe(0);
+    expect(r.max).toBeCloseTo(22);
+    expect(r.include(-10, 5)).toBe(true);
+    expect(r.min).toBeCloseTo(-13.2);
+    expect(r.max).toBeCloseTo(22);
+  });
+
+  it('ignores non-finite input and starts over after reset', () => {
+    const r = new ExpandingRange();
+    expect(r.include(NaN, 1)).toBe(false);
+    expect(r.include(0, Infinity)).toBe(false);
+    r.include(1, 2);
+    r.reset();
+    expect(r.empty).toBe(true);
+    r.include(5, 6);
+    expect([r.min, r.max]).toEqual([5, 6]);
   });
 });

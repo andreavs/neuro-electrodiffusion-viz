@@ -1,5 +1,5 @@
 import * as THREE from 'three';
-import { PointCloud, createScene, disposeObject, type Colormap, type SceneHandle } from '../../render';
+import { ExpandingRange, PointCloud, createScene, disposeObject, type Colormap, type SceneHandle } from '../../render';
 import type { SimClient } from '../../sim/client';
 import type { FrameMessage } from '../../sim/protocol';
 import { createAboutPanel } from '../../ui/about';
@@ -171,6 +171,9 @@ export function createParticlesView(): ScaleView {
         new LinePlot(q('[data-plot="hist"]'), { x: 'exit time (ms)', y: 'fraction' }),
       ];
       const [survivalPlot, histPlot] = plots as [LinePlot, LinePlot];
+      // The histogram's y axis only grows (no jitter) until the run restarts.
+      const histY = new ExpandingRange(0.1);
+      let lastTime = -1;
 
       const draw = (frame: FrameMessage) => {
         const f = Object.fromEntries(frame.fields.map((x) => [x.name, x.data]));
@@ -205,10 +208,13 @@ export function createParticlesView(): ScaleView {
             { xy: f.survival!, color: FIELD_COLOR },
           ],
         });
+        if (frame.timeMs < lastTime) histY.reset();
+        lastTime = frame.timeMs;
+        histY.include(0, maxOf([f.histogram, ref ? f.histogramRef : undefined], 0.01) * 1.1);
         const tMax = stats.histTMax ?? 1;
         histPlot.draw({
           x: [0, tMax],
-          y: [0, maxOf([f.histogram, ref ? f.histogramRef : undefined], 0.01) * 1.1],
+          y: [0, histY.max],
           series: [
             { xy: histogramSteps(f.histogram!, tMax), color: FIELD_COLOR, fill: true },
             ...(ref ? [{ xy: histogramSteps(f.histogramRef!, tMax), color: REF_COLOR, dashed: true }] : []),

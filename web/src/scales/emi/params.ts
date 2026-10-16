@@ -124,3 +124,6 @@ export const EMI_PARAMS = [
 export function sliceAxis(slice: string): number {
   return slice === 'across' ? 0 : 2;
 }
+
+/** Slice fields in the order the frame's `sliceField` stat refers to. */
+export const SLICE_FIELDS = ['phi', 'k', 'na', 'cl'];

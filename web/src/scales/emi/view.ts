@@ -18,7 +18,7 @@ import { ControlPanel } from '../../ui/controls';
 import { startRenderLoop } from '../../ui/renderLoop';
 import { getScale, type ScaleView } from '../registry';
 import { gather, membraneMesh, sliceAxisOf, sliceMesh, slicePlane, stimulatedCells, type QuadMesh } from './geometry';
-import { AXON_START, EMI_PARAMS } from './params';
+import { AXON_START, EMI_PARAMS, SLICE_FIELDS } from './params';
 import './view.css';
 
 /** Membrane potential colour range, mV: rest to the peak of an action potential. */
@@ -217,7 +217,9 @@ export function createEmiView(): ScaleView {
           inside = Boolean(params.inside);
           meshesStale = true;
         }
-        const fieldKey = String(params.field);
+        // Key the colour bar on the field this frame holds: frames sent before the worker saw a
+        // field change still carry the old one.
+        const fieldKey = SLICE_FIELDS[s.sliceField ?? -1] ?? String(params.field);
         if (fieldKey !== sliceField) {
           sliceField = fieldKey;
           const spec = FIELDS[fieldKey] ?? FIELDS.phi!;
@@ -227,7 +229,10 @@ export function createEmiView(): ScaleView {
           meshesStale = true;
         }
         if (geometryId < 0 || sliceId < 0 || corners.length < 12) return;
-        if (meshesStale) rebuildMeshes();
+        if (meshesStale) {
+          rebuildMeshes();
+          sliceBar!.resetAuto();
+        }
 
         if (s.probeX !== probeX) {
           probeX = s.probeX!;
@@ -250,7 +255,10 @@ export function createEmiView(): ScaleView {
         for (let r = 0; r + width <= tr.length; r += width) {
           const t = tr[r]!;
           // A reset or rebuild restarts the clock.
-          if (t < lastTraceT) for (const p of plots) p.clear();
+          if (t < lastTraceT) {
+            for (const p of plots) p.clear();
+            sliceBar!.resetAuto();
+          }
           lastTraceT = t;
           for (let c = 1; c <= nCells; c++) {
             const [p, i] = route[c]!;
