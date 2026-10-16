@@ -18,7 +18,10 @@ class FakeSim implements ParticlesWasm {
   ref = false;
   time = 0;
   freed = false;
-  constructor(readonly geometry: string) {}
+  constructor(
+    readonly geometry: string,
+    readonly dendrite = false,
+  ) {}
   set_field(kind: string, dv: number) {
     this.calls.push(`field ${kind} ${dv}`);
     this.ref = kind !== 'off' && dv !== 0;
@@ -39,7 +42,11 @@ class FakeSim implements ParticlesWasm {
     return k;
   }
   time_ms = () => this.time;
+  /** Last exit time; follows the clock unless a test sets it. */
+  passage: number | null = null;
+  passage_time_ms = () => this.passage ?? this.time;
   n_alive = () => this.alive;
+  n_in_dendrite = () => 0;
   n_released = () => this.released;
   has_reference = () => this.ref;
   positions = () => new Float32Array(3 * this.alive);
@@ -50,6 +57,8 @@ class FakeSim implements ParticlesWasm {
   profile = () => Float32Array.of(0.1, 0, 0.1, 1, 0, 1.5);
   neck_top = () => 1;
   neck_radius = () => 0.1;
+  dendrite_radius = () => (this.dendrite ? 0.45 : 0);
+  dendrite_half_length = () => (this.dendrite ? 3 : 0);
   free() {
     this.freed = true;
   }
@@ -59,8 +68,8 @@ function setup(params = {}) {
   const sims: FakeSim[] = [];
   const solver = makeParticlesSolver(
     params,
-    (geometry) => {
-      const s = new FakeSim(geometry);
+    (geometry, dendrite) => {
+      const s = new FakeSim(geometry, dendrite);
       sims.push(s);
       return s;
     },
@@ -106,6 +115,16 @@ describe('packFrame', () => {
     expect(f.stats).toMatchObject({ alive: 3, released: 4, histTMax: 0.5, hasReference: 1, refReleased: 2, mfpt: 1, refMfpt: 2 });
   });
 
+  it('ends the exit-time axis at the last exit, not the current time', () => {
+    const sim = new FakeSim('sharp', true);
+    sim.release(4, 0);
+    sim.time = 7;
+    sim.passage = 3;
+    const f = packFrame(sim, 1, 0);
+    expect(f.timeMs).toBe(7);
+    expect(f.stats).toMatchObject({ histTMax: 5, passageTime: 3 });
+  });
+
   it('omits the reference curves while the field is off', () => {
     const sim = new FakeSim('sharp');
     sim.set_field('off', 0);
@@ -133,6 +152,16 @@ describe('makeParticlesSolver', () => {
     expect(sims[0]!.freed).toBe(true);
     expect(sims[1]!.geometry).toBe('funnel');
     expect(sims[1]!.calls.at(-1)).toBe('release 5000 2000');
+  });
+
+  it('rebuilds with a dendrite when ions should spread into it', () => {
+    const { solver, sims } = setup();
+    expect(sims[0]!.dendrite).toBe(false);
+    solver.setParams({ outlet: 'dendrite' });
+    expect(sims).toHaveLength(2);
+    expect(sims[1]!.dendrite).toBe(true);
+    const f = solver.frame();
+    expect(f.stats).toMatchObject({ dendriteRadius: 0.45, dendriteHalfLength: 3, inDendrite: 0 });
   });
 
   it('stops before a step that would overrun the budget', () => {

@@ -7,7 +7,7 @@ declare const self: DedicatedWorkerGlobalScope;
 // The seed arrives in the worker's name so each shard draws its own random stream.
 const seed = Number(self.name);
 if (!Number.isSafeInteger(seed) || seed <= 0) throw new Error(`shard worker needs a positive integer seed as its name, got ${self.name}`);
-const runner = new ShardRunner((geometry, dt, s) => new ParticlesSim(geometry, dt, s), seed);
+const runner = new ShardRunner((geometry, dendrite, dt, s) => new ParticlesSim(geometry, dendrite, dt, s), seed);
 const ready = init().then(() => undefined);
 
 // Handle messages strictly in order, after the WASM module has loaded.

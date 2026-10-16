@@ -14,6 +14,17 @@ export const PARTICLE_PARAMS = [
   },
   {
     kind: 'select',
+    key: 'outlet',
+    label: 'At the neck base',
+    options: [
+      { value: 'dendrite', label: 'Ions spread into the dendrite' },
+      { value: 'absorb', label: 'Ions are absorbed' },
+    ],
+    default: 'absorb',
+    help: 'Either way the exit time is when an ion first leaves through the neck base',
+  },
+  {
+    kind: 'select',
     key: 'field',
     label: 'Electric field',
     options: [

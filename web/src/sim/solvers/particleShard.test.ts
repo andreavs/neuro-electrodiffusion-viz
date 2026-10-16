@@ -20,7 +20,9 @@ function fakeSim(geometry: string, log: string[]): ParticlesWasm {
       return k;
     },
     time_ms: () => time,
+    passage_time_ms: () => time,
     n_alive: () => alive,
+    n_in_dendrite: () => 0,
     n_released: () => released,
     has_reference: () => ref,
     positions: () => new Float32Array(3 * alive),
@@ -31,6 +33,8 @@ function fakeSim(geometry: string, log: string[]): ParticlesWasm {
     profile: () => Float32Array.of(0.1, 0, 0, 1),
     neck_top: () => 1,
     neck_radius: () => 0.1,
+    dendrite_radius: () => 0,
+    dendrite_half_length: () => 0,
     free: () => void log.push('free'),
   };
 }

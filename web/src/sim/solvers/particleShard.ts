@@ -10,6 +10,8 @@ export interface ShardStart {
   /** Release generation; replies to older generations are dropped. */
   gen: number;
   geometry: string;
+  /** Neck opens into a parent dendrite (default: absorbing base). */
+  dendrite?: boolean;
   dt: number;
   field: string;
   /** Signed potential drop, mV. */
@@ -85,7 +87,7 @@ const BATCH = 64;
 /** Shard-side state machine, free of Worker APIs; the shard worker is a thin adapter. */
 export class ShardRunner {
   private sim: ParticlesWasm | null = null;
-  private geometry = '';
+  private shape = '';
   private gen = -1;
   private steps = 0;
   private msPerStep = 0;
@@ -124,11 +126,13 @@ export class ShardRunner {
   }
 
   private start(msg: ShardStart): ShardState {
-    if (!this.sim || msg.geometry !== this.geometry) {
+    const dendrite = msg.dendrite ?? false;
+    const shape = `${msg.geometry}:${dendrite}`;
+    if (!this.sim || shape !== this.shape) {
       this.sim?.free();
       this.sim = null; // stays null if `create` throws
-      this.sim = this.create(msg.geometry, msg.dt, this.seed);
-      this.geometry = msg.geometry;
+      this.sim = this.create(msg.geometry, dendrite, msg.dt, this.seed);
+      this.shape = shape;
     }
     this.sim.set_dt(msg.dt);
     this.sim.set_field(msg.field, msg.dv);
