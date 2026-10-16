@@ -15,7 +15,6 @@ import {
 } from '../../render';
 import type { SimClient } from '../../sim/client';
 import type { FrameMessage } from '../../sim/protocol';
-import { createAboutPanel } from '../../ui/about';
 import { ControlPanel } from '../../ui/controls';
 import { startRenderLoop } from '../../ui/renderLoop';
 import { type ScaleView } from '../registry';
@@ -35,6 +34,7 @@ export function createSpreadingView(): ScaleView {
   let scene: SceneHandle | null = null;
   let plots: TimeSeriesPlot[] = [];
   let stopStyle: (() => void) | null = null;
+  let disposed = false;
 
   return {
     async mount(root: HTMLElement, client: SimClient) {
@@ -42,7 +42,7 @@ export function createSpreadingView(): ScaleView {
         <section class="kv">
           <header class="kv-head">
             <h2>Spreading depression from ion coupling alone</h2>
-            <p class="muted">Ten thousand simplified neurons (a soma and a dendrite each) sit in a 1 × 1 × 0.2 mm
+            <p class="muted">Thousands of simplified neurons (a soma and a dendrite each; 10,000 by default) sit in a 1 × 1 × 0.2 mm
               slab of tissue. They have no synapses: they interact only through the ions they release into and take
               up from the shared extracellular space. One neuron near the centre is driven hard. Its K⁺ raises the
               [K⁺]e around it; if that depolarises the neighbours enough that they release K⁺ faster than their
@@ -72,7 +72,6 @@ export function createSpreadingView(): ScaleView {
         </section>`;
       const q = <T extends HTMLElement>(sel: string) => root.querySelector<T>(sel)!;
       const out = { depol: q('[data-out="depol"]'), peak: q('[data-out="peak"]'), cost: q('[data-out="cost"]') };
-      q('.kv-head').append(createAboutPanel('knp'));
       const panel = new ControlPanel(q('.kv-side'), client, SD_PARAMS);
       try {
         scene = createScene(q<HTMLCanvasElement>('.kv-canvas'));
@@ -112,7 +111,7 @@ export function createSpreadingView(): ScaleView {
       let style: RenderStyle = 'classic';
       const glow = () => style === 'glow';
       /** Dense cloud: dim sprites so 10,000 of them don't bloom into a white sheet. */
-      const NEURON_GLOW = 0.35;
+      const NEURON_GLOW = 0.6;
       const fieldInfo = (f: string) => SD_FIELDS.find((x) => x.value === f) ?? SD_FIELDS[0];
 
       const rebuildColorbar = (field: string) => {
@@ -132,7 +131,7 @@ export function createSpreadingView(): ScaleView {
         size = [st.sizeX!, st.sizeY!, st.sizeZ!];
         const extent = new THREE.Vector3(...size).multiplyScalar(WORLD_PER_UM);
         // The somata fill the lower half of the slab: slice through its middle.
-        slice = new SlicePlane({ shape, extent, axis: 'z', colormap: viridis, opacity: 0.9, smooth: view.floatLinear });
+        slice = new SlicePlane({ shape, extent, axis: 'z', colormap: viridis, opacity: 0.75, smooth: view.floatLinear });
         slice.index = Math.floor(shape[2] / 4);
         view.scene.add(slice.mesh);
         view.scene.add(
@@ -196,6 +195,7 @@ export function createSpreadingView(): ScaleView {
         if (st.generation !== generation || frame.timeMs < lastTime) {
           generation = st.generation ?? 0;
           for (const p of plots) p.clear();
+          colorbar?.resetAuto(); // a new tissue: refit auto colours to it
         }
         lastTime = frame.timeMs;
         lastField = field.data;
@@ -237,11 +237,13 @@ export function createSpreadingView(): ScaleView {
         out.depol.textContent = `Failed to load solver: ${String(err)}`;
         return;
       }
+      if (disposed) return;
       startRenderLoop(client, { draw, stats: panel });
       client.create('knp-sd', panel.params());
       panel.setRunning(true);
     },
     unmount() {
+      disposed = true;
       stopStyle?.();
       stopStyle = null;
       for (const p of plots) p.dispose();

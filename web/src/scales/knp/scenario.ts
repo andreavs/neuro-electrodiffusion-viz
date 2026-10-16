@@ -6,7 +6,7 @@ import { createKnpView } from './view';
 /** Scenarios of the tissue view, chosen by the route (`#/knp`, `#/knp/spreading`). */
 const SCENARIOS = [
   { path: '', label: 'One pyramidal cell', create: createKnpView },
-  { path: 'spreading', label: 'Spreading depression (10,000 cells)', create: createSpreadingView },
+  { path: 'spreading', label: 'Spreading depression', create: createSpreadingView },
 ] as const;
 
 /** The scenario named by `hash` (`#/knp/<path>`), defaulting to the first. */
@@ -26,7 +26,6 @@ export function createTissueView(): ScaleView {
       const nav = document.createElement('nav');
       nav.className = 'kv-scenarios';
       nav.setAttribute('aria-label', 'Scenario');
-      nav.append('Scenario: ');
       for (const s of SCENARIOS) {
         const a = document.createElement('a');
         a.href = s.path ? `#/knp/${s.path}` : '#/knp';
