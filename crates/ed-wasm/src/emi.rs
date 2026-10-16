@@ -1,12 +1,13 @@
-//! Bindings for `ed-emi`: a KNP-EMI axon bundle (Publication 2).
+//! Bindings for `ed-emi`: KNP-EMI on an axon bundle (Publication 2) or on a mesh file.
 //!
 //! [`EmiSim`] owns the finite element solver and turns its per-DOF state into what the
 //! cell-scale view draws: membrane potential on the cell surfaces, one extracellular (or
 //! intracellular) field on a plane cut, and φ_M traces at probes.
 
 use ed_emi::mesh::{Aabb, Mesh, MeshSpec};
+use ed_emi::meshfile;
 
-use crate::emi_slice::PlaneCut;
+use crate::emi_slice::{nodes_near, PlaneCut};
 use ed_emi::solver::{EmiParams, EmiSolver};
 use wasm_bindgen::prelude::*;
 
@@ -63,7 +64,7 @@ pub fn selection(n: usize, which: &str) -> Result<Vec<u16>, String> {
 #[wasm_bindgen]
 pub struct EmiSim {
     solver: EmiSolver,
-    /// Axons per side of the bundle.
+    /// Axons per side of the bundle, or 0 for a mesh file.
     per_side: usize,
     /// Membrane nodes of each probe: one per axon on the probe plane for the bundle.
     probe_nodes: Vec<Vec<usize>>,
@@ -85,6 +86,43 @@ impl EmiSim {
         Self::build(per_side, gap, dt).map_err(js)
     }
 
+    /// A simulation on a mesh file (see `ed_emi::meshfile`), time step `dt` ms. It has no
+    /// probes until `add_probe`.
+    pub fn from_mesh(bytes: &[u8], dt: f64) -> Result<EmiSim, JsError> {
+        Self::load(bytes, dt).map_err(js)
+    }
+
+    /// Opens a synapse (`g` mS/cm²) now on the membrane of `cell` within `r` µm of
+    /// (x, y, z). Returns how many membrane nodes it opened.
+    pub fn stimulate_sphere(&mut self, cell: u16, x: f64, y: f64, z: f64, r: f64, g: f64) -> usize {
+        let t = self.solver.t();
+        let n = self.solver.stimulate_where(
+            cell,
+            |p| (p[0] - x).powi(2) + (p[1] - y).powi(2) + (p[2] - z).powi(2) <= r * r,
+            g,
+            t,
+        );
+        if n > 0 && (1..=32).contains(&cell) {
+            self.stimulated |= 1 << (cell - 1);
+        }
+        n
+    }
+
+    /// Adds a probe: the mean φ_M over membrane nodes within `r` µm of (x, y, z). Returns
+    /// its node count (a probe with none records NaN).
+    pub fn add_probe(&mut self, x: f64, y: f64, z: f64, r: f64) -> usize {
+        let nodes = nodes_near(self.solver.mesh(), None, [x, y, z], r);
+        let n = nodes.len();
+        self.probe_nodes.push(nodes);
+        self.traces.clear();
+        self.record();
+        n
+    }
+
+    pub fn n_probes(&self) -> usize {
+        self.probe_nodes.len()
+    }
+
     /// Opens the stimulus synapse now on the axons picked by `which` ("centre", "corner",
     /// "all").
     pub fn stimulate(&mut self, which: &str) -> Result<(), JsError> {
@@ -98,9 +136,9 @@ impl EmiSim {
     }
 
     /// Moves the bundle's probes to the grid plane nearest `x` µm from the start of the
-    /// axons (one per axon).
+    /// axons (one per axon). Does nothing on a mesh file.
     pub fn set_probe(&mut self, x: f64) {
-        if !x.is_finite() {
+        if !x.is_finite() || self.per_side == 0 {
             return;
         }
         let mesh = self.solver.mesh();
@@ -216,22 +254,15 @@ impl EmiSim {
         check_dt(dt)?;
         let n = per_side as usize;
         let mesh = Mesh::build(&bundle_spec(n, gap)).map_err(|e| e.to_string())?;
-        let params = EmiParams {
-            dt,
-            ..EmiParams::default()
-        };
-        let mut sim = Self {
-            bounds: mesh.bounds(),
-            solver: EmiSolver::new(mesh, params),
-            per_side: n,
-            probe_nodes: Vec::new(),
-            probe_x: 0.0,
-            traces: Vec::new(),
-            stimulated: 0,
-            cut: None,
-        };
+        let mut sim = Self::with_mesh(mesh, n, dt);
         sim.set_probe(0.75 * LENGTH);
         Ok(sim)
+    }
+
+    fn load(bytes: &[u8], dt: f64) -> Result<Self, String> {
+        check_dt(dt)?;
+        let mesh = meshfile::read(bytes).map_err(|e| e.to_string())?;
+        Ok(Self::with_mesh(mesh, 0, dt))
     }
 
     fn slice_field(&mut self, axis: usize, frac: f64, field: &str) -> Result<Vec<f32>, String> {
@@ -247,7 +278,27 @@ impl EmiSim {
         Ok(self.cut.as_ref().expect("just cut").2.values(data))
     }
 
+    fn with_mesh(mesh: Mesh, per_side: usize, dt: f64) -> Self {
+        let params = EmiParams {
+            dt,
+            ..EmiParams::default()
+        };
+        Self {
+            bounds: mesh.bounds(),
+            solver: EmiSolver::new(mesh, params),
+            per_side,
+            probe_nodes: Vec::new(),
+            probe_x: 0.0,
+            traces: Vec::new(),
+            stimulated: 0,
+            cut: None,
+        }
+    }
+
     fn stimulate_cells(&mut self, which: &str) -> Result<(), String> {
+        if self.per_side == 0 {
+            return Err("this geometry has no axon selection; use stimulate_sphere".into());
+        }
         let t = self.solver.t();
         for c in selection(self.per_side, which)? {
             self.solver
@@ -360,6 +411,40 @@ mod tests {
         assert!((1..=9).all(|c| tags.contains(&(c as f32))));
         assert!(s.slice_tags(2, 0.5).contains(&5.0));
         assert!(s.slice_field(2, 0.5, "q").is_err());
+    }
+
+    #[test]
+    fn mesh_files_get_probes_and_sphere_stimuli() {
+        let grid = Mesh::build(&bundle_spec(1, 0.1)).unwrap();
+        let data = meshfile::MeshData {
+            points: grid.points.clone(),
+            tets: grid
+                .tets
+                .iter()
+                .map(|t| t.map(|d| grid.dof_vertex[d as usize]))
+                .collect(),
+            tet_tag: grid.tet_tag.clone(),
+            n_cells: 1,
+        };
+        let mut s = EmiSim::load(&data.to_bytes(), 0.1).unwrap();
+        assert!(EmiSim::load(b"junk", 0.1).is_err());
+        assert!(s.stimulate_cells("centre").is_err());
+        assert_eq!(s.n_probes(), 0);
+        let mid = [0.5 * SIDE + MARGIN; 2];
+        assert!(s.add_probe(END_GAP + 150.0, mid[0], mid[1], 0.5) > 0);
+        assert!(s.add_probe(-50.0, 0.0, 0.0, 1.0) == 0);
+        assert_eq!(s.take_traces().len(), 3);
+        assert!(s.stimulate_sphere(1, END_GAP, mid[0], mid[1], 20.0, 4.0) > 0);
+        assert_eq!(s.stimulated(), 1);
+        let mut peak = f32::NEG_INFINITY;
+        for _ in 0..40 {
+            s.step(1).unwrap();
+            let tr = s.take_traces();
+            peak = peak.max(tr[1]);
+            assert!(tr[2].is_nan());
+        }
+        assert!(peak > 0.0, "the action potential reached the probe: {peak}");
+        assert_eq!(s.bounds().len(), 6);
     }
 
     #[test]
