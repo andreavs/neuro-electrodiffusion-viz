@@ -3,5 +3,7 @@
 
 pub mod channels;
 mod morphology;
+mod neuron;
 
 pub use morphology::{HayMorphology, Region};
+pub use neuron::{HayNeuron, HayParams};
