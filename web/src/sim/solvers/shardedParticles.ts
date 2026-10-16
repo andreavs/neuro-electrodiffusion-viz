@@ -17,10 +17,15 @@ export interface ShardPort {
 export const DISPLAY_MAX = 100_000;
 const MAX_STEPS_PER_ROUND = 4096;
 const SURVIVAL_CAPACITY = 2048;
-/** True once every ion of a round, reference included, has escaped. */
+/** True once every ion of a round, reference included, has escaped (and left the dendrite). */
 function finished(round: ShardState[], nRef: number): boolean {
   const ref = round[0]?.ref;
-  return round.length > 0 && round.every((s) => s.alive === 0) && !(ref && ref.mfpt[2]! < nRef);
+  return round.length > 0 && round.every((s) => s.alive === 0 && s.inDendrite === 0) && !(ref && ref.mfpt[2]! < nRef);
+}
+
+/** Latest last-exit time over the shards, ms. */
+function passageTime(round: ShardState[]): number {
+  return round.reduce((a, s) => Math.max(a, s.passageTime), 0);
 }
 
 /** A copy of `a` zero-padded (or cut) to length `n`. */
@@ -66,7 +71,13 @@ export class ShardedParticlesSolver implements WorkerSolver {
   private survival: number[] = [0, 1];
   private survivalEvery = 1;
   private rounds = 0;
-  private profile: { data: Float32Array; neckTop: number; neckRadius: number } | null = null;
+  private profile: {
+    data: Float32Array;
+    neckTop: number;
+    neckRadius: number;
+    dendriteRadius: number;
+    dendriteHalfLength: number;
+  } | null = null;
   private nRef = 0;
   /** Histogram range of the merged round. */
   private histTMax = 1;
@@ -122,12 +133,16 @@ export class ShardedParticlesSolver implements WorkerSolver {
     const ref = states[0]?.ref;
     const stats: Record<string, number> = {
       alive,
+      inDendrite: states.reduce((a, s) => a + s.inDendrite, 0),
+      passageTime: passageTime(states),
       released,
       histTMax: this.histTMax,
       hasReference: ref ? 1 : 0,
       refReleased: ref ? this.nRef : 0,
       neckTop: p?.neckTop ?? 1,
       neckRadius: p?.neckRadius ?? 0.1,
+      dendriteRadius: p?.dendriteRadius ?? 0,
+      dendriteHalfLength: p?.dendriteHalfLength ?? 0,
       workers: this.active,
       mfpt: m[0]!,
       mfptSe: m[1]!,
@@ -173,6 +188,7 @@ export class ShardedParticlesSolver implements WorkerSolver {
     this.merged = [];
     this.done = [];
     this.histTMax = 1;
+    this.profile = null; // the shape may change; the start replies bring the new one
     const counts = splitEvenly(n, this.active);
     const geometry = String(this.params.geometry);
     const dv = signedDrop(Number(this.params.dv), String(this.params.direction));
@@ -184,6 +200,7 @@ export class ShardedParticlesSolver implements WorkerSolver {
         type: 'start',
         gen: this.gen,
         geometry,
+        dendrite: this.params.outlet === 'dendrite',
         dt: Number(this.params.dt),
         field: String(this.params.field),
         dv,
@@ -216,7 +233,14 @@ export class ShardedParticlesSolver implements WorkerSolver {
     }
     if (msg.gen !== this.gen || index >= this.active || this.replies[index]) return;
     this.replies[index] = msg;
-    if (msg.profile) this.profile = { data: msg.profile, neckTop: msg.neckTop ?? 1, neckRadius: msg.neckRadius ?? 0.1 };
+    if (msg.profile)
+      this.profile = {
+        data: msg.profile,
+        neckTop: msg.neckTop ?? 1,
+        neckRadius: msg.neckRadius ?? 0.1,
+        dendriteRadius: msg.dendriteRadius ?? 0,
+        dendriteHalfLength: msg.dendriteHalfLength ?? 0,
+      };
     if (--this.pending === 0) {
       const round = this.replies as ShardState[];
       this.done.push(round);
@@ -241,10 +265,13 @@ export class ShardedParticlesSolver implements WorkerSolver {
     this.histTMax = round[0]?.tMax ?? 1;
     const alive = this.merged.reduce((a, s) => a + s.alive, 0);
     const released = this.merged.reduce((a, s) => a + s.released, 0);
-    const t = this.merged.reduce((a, s) => Math.max(a, s.timeMs), 0);
+    // Survival is sampled up to the last exit, not while escaped ions spread in the dendrite.
+    const t = passageTime(this.merged);
     // The round where the last ion leaves is always sampled, so the curve ends at 0.
-    const last = finished(round, this.nRef);
-    if ((this.rounds++ % this.survivalEvery === 0 || last) && t > this.survival[this.survival.length - 2]!) {
+    const last = finished(round, this.nRef) || alive === 0;
+    // `t` can keep growing with the reference's clock, so stop once the curve has reached 0.
+    const open = this.survival[this.survival.length - 1]! > 0;
+    if ((this.rounds++ % this.survivalEvery === 0 || last) && open && t > this.survival[this.survival.length - 2]!) {
       // Thin before pushing, so the newest sample (maybe the last exit) is kept.
       if (this.survival.length / 2 + 1 >= SURVIVAL_CAPACITY) {
         // Keep t = 0 and every other sample; sample half as often from now on.
@@ -260,8 +287,10 @@ export class ShardedParticlesSolver implements WorkerSolver {
     const latest = this.done[this.done.length - 1] ?? this.merged;
     const msPerStep = latest.reduce((a, s) => Math.max(a, s.msPerStep), 0);
     const steps = msPerStep > 0 ? Math.max(1, Math.min(MAX_STEPS_PER_ROUND, Math.floor(this.budgetMs / msPerStep))) : 4;
-    const timeMs = latest.reduce((a, s) => Math.max(a, s.timeMs), 0);
-    const tMax = niceCeil(timeMs + steps * Number(this.params.dt));
+    // Exit-time axes end at the last exit, not when the last ion leaves the dendrite.
+    // Pad while any ion (main or reference) is still inside; the passage clocks then run on.
+    const exiting = latest.length === 0 || latest.some((s) => s.passageTime >= s.timeMs);
+    const tMax = niceCeil(passageTime(latest) + (exiting ? steps * Number(this.params.dt) : 0));
     const display = Math.ceil(DISPLAY_MAX / this.active);
     this.collect(this.active);
     for (let i = 0; i < this.active; i++)

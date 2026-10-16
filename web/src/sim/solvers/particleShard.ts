@@ -10,6 +10,8 @@ export interface ShardStart {
   /** Release generation; replies to older generations are dropped. */
   gen: number;
   geometry: string;
+  /** Neck opens into a parent dendrite (default: absorbing base). */
+  dendrite?: boolean;
   dt: number;
   field: string;
   /** Signed potential drop, mV. */
@@ -45,6 +47,10 @@ export interface ShardState {
   steps: number;
   timeMs: number;
   alive: number;
+  /** Escaped ions still moving in the dendrite. */
+  inDendrite: number;
+  /** Time of the last exit, or `timeMs` while ions are inside. */
+  passageTime: number;
   released: number;
   /** Fraction of this shard's released ions per bin. */
   histogram: Float32Array;
@@ -62,6 +68,9 @@ export interface ShardState {
   profile?: Float32Array;
   neckTop?: number;
   neckRadius?: number;
+  /** Dendrite size, µm; 0 with an absorbing base. */
+  dendriteRadius?: number;
+  dendriteHalfLength?: number;
 }
 
 export interface ShardError {
@@ -87,7 +96,7 @@ const BATCH = 64;
 /** Shard-side state machine, free of Worker APIs; the shard worker is a thin adapter. */
 export class ShardRunner {
   private sim: ParticlesWasm | null = null;
-  private geometry = '';
+  private shape = '';
   private gen = -1;
   private steps = 0;
   private msPerStep = 0;
@@ -126,11 +135,13 @@ export class ShardRunner {
   }
 
   private start(msg: ShardStart): ShardState {
-    if (!this.sim || msg.geometry !== this.geometry) {
+    const dendrite = msg.dendrite ?? false;
+    const shape = `${msg.geometry}:${dendrite}`;
+    if (!this.sim || shape !== this.shape) {
       this.sim?.free();
       this.sim = null; // stays null if `create` throws
-      this.sim = this.create(msg.geometry, msg.dt, this.seed);
-      this.geometry = msg.geometry;
+      this.sim = this.create(msg.geometry, dendrite, msg.dt, this.seed);
+      this.shape = shape;
     }
     this.sim.set_dt(msg.dt);
     this.sim.set_field(msg.field, msg.dv);
@@ -153,6 +164,8 @@ export class ShardRunner {
       steps: this.steps,
       timeMs: sim.time_ms(),
       alive: sim.n_alive(),
+      inDendrite: sim.n_in_dendrite(),
+      passageTime: sim.passage_time_ms(),
       released: sim.n_released(),
       histogram: sim.histogram(false, this.bins, this.tMax),
       mfpt: sim.mfpt(false),
@@ -172,6 +185,8 @@ export class ShardRunner {
       s.profile = sim.profile(PROFILE_SEGMENTS);
       s.neckTop = sim.neck_top();
       s.neckRadius = sim.neck_radius();
+      s.dendriteRadius = sim.dendrite_radius();
+      s.dendriteHalfLength = sim.dendrite_half_length();
     }
     return s;
   }

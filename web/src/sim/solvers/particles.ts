@@ -13,7 +13,9 @@ export interface ParticlesWasm {
   release(n: number, nReference: number): void;
   step(n: number): number;
   time_ms(): number;
+  passage_time_ms(): number;
   n_alive(): number;
+  n_in_dendrite(): number;
   n_released(): number;
   has_reference(): boolean;
   positions(): Float32Array;
@@ -24,10 +26,12 @@ export interface ParticlesWasm {
   profile(segments: number): Float32Array;
   neck_top(): number;
   neck_radius(): number;
+  dendrite_radius(): number;
+  dendrite_half_length(): number;
   free(): void;
 }
 
-export type ParticlesWasmFactory = (geometry: string, dt: number, seed: number) => ParticlesWasm;
+export type ParticlesWasmFactory = (geometry: string, dendrite: boolean, dt: number, seed: number) => ParticlesWasm;
 
 export const HISTOGRAM_BINS = 40;
 /** Segments of the head arc in the wall profile sent to the view. */
@@ -63,7 +67,9 @@ function mfptStats(prefix: string, m: Float64Array): Record<string, number> {
 /** Packs the current state of `sim` into a frame. Every array is a fresh copy (transferable). */
 export function packFrame(sim: ParticlesWasm, steps: number, nReference: number): SolverFrame {
   const time = sim.time_ms();
-  const tMax = niceCeil(time);
+  // Exit-time axes end at the last exit, not when the last ion leaves the dendrite.
+  const passage = sim.passage_time_ms();
+  const tMax = niceCeil(passage);
   const positions = sim.positions();
   const n = positions.length / 3;
   const fields: FrameField[] = [
@@ -76,12 +82,16 @@ export function packFrame(sim: ParticlesWasm, steps: number, nReference: number)
   if (sim.has_reference()) curves.push(['Ref', true]);
   let stats: Record<string, number> = {
     alive: sim.n_alive(),
+    inDendrite: sim.n_in_dendrite(),
+    passageTime: passage,
     released: sim.n_released(),
     histTMax: tMax,
     hasReference: sim.has_reference() ? 1 : 0,
     refReleased: sim.has_reference() ? nReference : 0,
     neckTop: sim.neck_top(),
     neckRadius: sim.neck_radius(),
+    dendriteRadius: sim.dendrite_radius(),
+    dendriteHalfLength: sim.dendrite_half_length(),
   };
   for (const [suffix, ref] of curves) {
     const s = sim.survival(ref);
@@ -102,7 +112,7 @@ export function makeParticlesSolver(
 ): WorkerSolver {
   const params: Params = { ...defaultParams(PARTICLE_PARAMS), ...initial };
   let seed = 1;
-  const build = () => create(String(params.geometry), Number(params.dt), seed++);
+  const build = () => create(String(params.geometry), params.outlet === 'dendrite', Number(params.dt), seed++);
   let sim = build();
   let steps = 0;
   let msPerStep = 0;
@@ -132,7 +142,7 @@ export function makeParticlesSolver(
         // Stop before a step that would overrun the budget (but always take at least one).
         if (taken > 0 && (remaining <= 0 || remaining < est)) break;
         const n = sim.step(batchSize(remaining, est));
-        if (n === 0) break; // every ion has escaped
+        if (n === 0) break; // every ion has escaped (and left the dendrite)
         taken += n;
         if (msPerStep === 0) est = Math.max(now() - t0, 1e-3) / taken;
       }
@@ -146,7 +156,7 @@ export function makeParticlesSolver(
     frame: () => packFrame(sim, steps, nReference),
     setParams(changed) {
       Object.assign(params, changed);
-      if ('geometry' in changed) {
+      if ('geometry' in changed || 'outlet' in changed) {
         sim.free();
         sim = build();
       }
@@ -182,4 +192,4 @@ function spawnShard(index: number): ShardPort {
 export const createParticlesSolver: SolverFactory = (params) =>
   typeof Worker === 'function'
     ? new ShardedParticlesSolver(params, spawnShard, navigator.hardwareConcurrency || 4)
-    : makeParticlesSolver(params, (geometry, dt, seed) => new ParticlesSim(geometry, dt, seed));
+    : makeParticlesSolver(params, (geometry, dendrite, dt, seed) => new ParticlesSim(geometry, dendrite, dt, seed));

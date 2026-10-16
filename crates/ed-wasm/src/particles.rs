@@ -2,11 +2,13 @@
 //!
 //! [`ParticlesSim`] runs the population with the chosen field and, when a field is on, a
 //! smaller zero-field reference population in lockstep so the view can overlay both.
+//! The neck either ends in an absorbing base or opens into a parent dendrite, where escaped
+//! ions keep diffusing; either way the first passage through the neck base is what is timed.
 
 use ed_core::Simulation;
 use ed_particles::{
-    ElectricField, Junction, NeckField, NoField, ParticleParams, ParticleSim, SpineGeometry,
-    UniformField,
+    ElectricField, Geometry, Junction, NeckField, NoField, ParticleParams, ParticleSim,
+    SegmentExit, SpineGeometry, SpineOnDendrite, UniformField, Vec3,
 };
 use wasm_bindgen::prelude::*;
 
@@ -31,10 +33,10 @@ impl FieldKind {
 
 #[wasm_bindgen]
 pub struct ParticlesSim {
-    geom: SpineGeometry,
-    sim: ParticleSim<SpineGeometry>,
+    geom: Domain,
+    sim: ParticleSim<Domain>,
     /// Zero-field population for comparison; `None` while the field is off.
-    reference: Option<ParticleSim<SpineGeometry>>,
+    reference: Option<ParticleSim<Domain>>,
     field: FieldKind,
     /// Head-minus-base potential drop, mV; positive pushes cations out.
     delta_v: f64,
@@ -45,10 +47,21 @@ pub struct ParticlesSim {
 
 #[wasm_bindgen]
 impl ParticlesSim {
-    /// `geometry` is "sharp" or "funnel"; `dt` in ms.
+    /// `geometry` is "sharp" or "funnel"; with `dendrite` the neck opens into a parent
+    /// dendrite instead of an absorbing base. `dt` in ms.
     #[wasm_bindgen(constructor)]
-    pub fn new(geometry: &str, dt: f64, seed: u32) -> Result<ParticlesSim, JsError> {
-        let geom = parse_geometry(geometry).map_err(js)?;
+    pub fn new(
+        geometry: &str,
+        dendrite: bool,
+        dt: f64,
+        seed: u32,
+    ) -> Result<ParticlesSim, JsError> {
+        let spine = parse_geometry(geometry).map_err(js)?;
+        let geom = if dendrite {
+            Domain::Dendrite(SpineOnDendrite::with_default_dendrite(spine))
+        } else {
+            Domain::Spine(spine)
+        };
         let params = checked_params(dt).map_err(js)?;
         Ok(Self {
             geom,
@@ -101,21 +114,27 @@ impl ParticlesSim {
         self.reference = (self.has_field() && n_reference > 0).then(|| {
             // A stream independent of the main population's, different for every release.
             let seed = self.seed ^ 0x9E37_79B9_7F4A_7C15 ^ (self.releases << 32);
-            let mut r = ParticleSim::new(self.geom, self.sim.params(), seed);
+            // Only its exit times are shown, so it needs no dendrite: the absorbing base
+            // records the same first passage without moving the escaped ions on.
+            let geom = Domain::Spine(*self.spine());
+            let mut r = ParticleSim::new(geom, self.sim.params(), seed);
             r.release(n_reference);
             r
         });
         Ok(())
     }
 
-    /// Advances both populations by up to `n` steps; a population stops once all its ions
-    /// have escaped. Returns the steps taken (0 when both are empty).
+    /// Advances both populations by up to `n` steps. The reference stops once all its ions
+    /// have escaped; the main population runs on while escaped ions are still in the
+    /// dendrite. Returns the steps taken (0 when nothing is left to move).
     pub fn step(&mut self, n: usize) -> usize {
         let mut taken = 0;
-        while taken < n && (self.sim.n_alive() > 0 || self.reference_alive() > 0) {
+        while taken < n
+            && (self.sim.n_alive() + self.sim.n_escaped_moving() > 0 || self.reference_alive() > 0)
+        {
             // `step` skips an empty population, so its clock stops at its last exit.
             self.sim.step(1);
-            if let Some(r) = &mut self.reference {
+            if let Some(r) = self.reference.as_mut().filter(|r| r.n_alive() > 0) {
                 r.step(1);
             }
             taken += 1;
@@ -128,8 +147,19 @@ impl ParticlesSim {
         let r = self.reference.as_ref().map_or(0.0, |r| r.time_ms());
         self.sim.time_ms().max(r)
     }
+    /// Time until the last ion of either population escaped (the current time while some
+    /// are inside), ms: the end of the survival curves.
+    pub fn passage_time_ms(&self) -> f64 {
+        let r = self.reference.as_ref().map_or(0.0, |r| r.passage_time());
+        self.sim.passage_time().max(r)
+    }
+    /// Ions still inside the spine.
     pub fn n_alive(&self) -> usize {
         self.sim.n_alive()
+    }
+    /// Escaped ions still diffusing in the dendrite (0 with an absorbing base).
+    pub fn n_in_dendrite(&self) -> usize {
+        self.sim.n_escaped_moving()
     }
     pub fn n_released(&self) -> usize {
         self.sim.n_released()
@@ -138,20 +168,26 @@ impl ParticlesSim {
         self.reference.is_some()
     }
 
-    /// Interleaved xyz (µm) of the live ions. A fresh array each call.
+    /// Interleaved xyz (µm) of the ions in the spine, then of those in the dendrite.
+    /// A fresh array each call.
     pub fn positions(&self) -> Vec<f32> {
-        let mut out = Vec::with_capacity(3 * self.sim.n_alive());
-        self.sim
-            .for_each_position(|p| out.extend([p[0] as f32, p[1] as f32, p[2] as f32]));
+        let mut out = Vec::with_capacity(3 * (self.sim.n_alive() + self.sim.n_escaped_moving()));
+        let mut push = |p: Vec3| out.extend([p[0] as f32, p[1] as f32, p[2] as f32]);
+        self.sim.for_each_position(&mut push);
+        self.sim.for_each_escaped_position(&mut push);
         out
     }
 
-    /// Per live ion: 1 in the head, 0 in the neck (same order as `positions`).
+    /// Per ion, in the order of `positions`: 0 in the neck, 1 in the head, 2 escaped and in
+    /// the dendrite.
     pub fn regions(&self) -> Vec<f32> {
-        let top = self.geom.neck_top();
-        let mut out = Vec::with_capacity(self.sim.n_alive());
+        let top = self.spine().neck_top();
+        let mut out = Vec::with_capacity(self.sim.n_alive() + self.sim.n_escaped_moving());
+        let region = |p: Vec3| if p[2] >= top { 1.0 } else { 0.0 };
+        self.sim.for_each_position(|p| out.push(region(p)));
+        // Escaped ions that wander back up the neck take the spine's colours again.
         self.sim
-            .for_each_position(|p| out.push(if p[2] >= top { 1.0 } else { 0.0 }));
+            .for_each_escaped_position(|p| out.push(if p[2] < 0.0 { 2.0 } else { region(p) }));
         out
     }
 
@@ -197,7 +233,7 @@ impl ParticlesSim {
     /// to the top of the head (r = 0), as interleaved pairs in µm. Revolve it about z to
     /// draw the surface.
     pub fn profile(&self, segments: usize) -> Vec<f32> {
-        spine_profile(&self.geom, segments.clamp(4, MAX_BINS))
+        spine_profile(self.spine(), segments.clamp(4, MAX_BINS))
             .into_iter()
             .flat_map(|(r, z)| [r as f32, z as f32])
             .collect()
@@ -205,14 +241,35 @@ impl ParticlesSim {
 
     /// Height where the neck meets the head (µm).
     pub fn neck_top(&self) -> f64 {
-        self.geom.neck_top()
+        self.spine().neck_top()
     }
     pub fn neck_radius(&self) -> f64 {
-        self.geom.neck_radius()
+        self.spine().neck_radius()
+    }
+    /// Dendrite radius and half-length along x (µm); 0 with an absorbing base.
+    pub fn dendrite_radius(&self) -> f64 {
+        self.dendrite().map_or(0.0, |d| d.radius())
+    }
+    pub fn dendrite_half_length(&self) -> f64 {
+        self.dendrite().map_or(0.0, |d| d.half_length())
     }
 }
 
 impl ParticlesSim {
+    fn spine(&self) -> &SpineGeometry {
+        match &self.geom {
+            Domain::Spine(s) => s,
+            Domain::Dendrite(d) => d.spine(),
+        }
+    }
+
+    fn dendrite(&self) -> Option<&SpineOnDendrite> {
+        match &self.geom {
+            Domain::Spine(_) => None,
+            Domain::Dendrite(d) => Some(d),
+        }
+    }
+
     fn reference_alive(&self) -> usize {
         self.reference.as_ref().map_or(0, |r| r.n_alive())
     }
@@ -221,7 +278,7 @@ impl ParticlesSim {
         self.field != FieldKind::Off && self.delta_v != 0.0
     }
 
-    fn population(&self, reference: bool) -> Option<&ParticleSim<SpineGeometry>> {
+    fn population(&self, reference: bool) -> Option<&ParticleSim<Domain>> {
         if reference {
             self.reference.as_ref()
         } else {
@@ -232,12 +289,67 @@ impl ParticlesSim {
     fn make_field(&self) -> Box<dyn ElectricField> {
         match self.field {
             FieldKind::Off => Box::new(NoField),
-            FieldKind::Neck => Box::new(NeckField::for_spine(&self.geom, self.delta_v)),
+            FieldKind::Neck => Box::new(NeckField::for_spine(self.spine(), self.delta_v)),
             FieldKind::Uniform => {
-                let height = self.geom.head_centre()[2] + self.geom.head_radius();
-                Box::new(UniformField::axial_out(self.delta_v / height))
+                let spine = self.spine();
+                let height = spine.head_centre()[2] + spine.head_radius();
+                let e_out = self.delta_v / height;
+                if self.dendrite().is_some() {
+                    // The drop is across the spine only; the dendrite stays field-free.
+                    Box::new(NeckField {
+                        e_out,
+                        z_top: height,
+                    })
+                } else {
+                    Box::new(UniformField::axial_out(e_out))
+                }
             }
         }
+    }
+}
+
+/// The spine alone or on its dendrite, chosen at run time.
+#[derive(Debug, Clone, Copy)]
+enum Domain {
+    Spine(SpineGeometry),
+    Dendrite(SpineOnDendrite),
+}
+
+macro_rules! delegate {
+    ($self:ident, $g:ident => $e:expr) => {
+        match $self {
+            Domain::Spine($g) => $e,
+            Domain::Dendrite($g) => $e,
+        }
+    };
+}
+
+impl Geometry for Domain {
+    fn sdf(&self, p: Vec3) -> f64 {
+        delegate!(self, g => g.sdf(p))
+    }
+    #[inline]
+    fn contains(&self, p: Vec3) -> bool {
+        delegate!(self, g => g.contains(p))
+    }
+    fn absorbs(&self, b: Vec3) -> bool {
+        delegate!(self, g => g.absorbs(b))
+    }
+    #[inline]
+    fn escaped(&self, p: Vec3) -> bool {
+        delegate!(self, g => g.escaped(p))
+    }
+    fn normal(&self, p: Vec3) -> Vec3 {
+        delegate!(self, g => g.normal(p))
+    }
+    fn segment_exit(&self, a: Vec3, b: Vec3) -> Option<SegmentExit> {
+        delegate!(self, g => g.segment_exit(a, b))
+    }
+    fn release_point(&self) -> Vec3 {
+        delegate!(self, g => g.release_point())
+    }
+    fn bounds(&self) -> (Vec3, Vec3) {
+        delegate!(self, g => g.bounds())
     }
 }
 
@@ -313,7 +425,6 @@ fn spine_profile(g: &SpineGeometry, segments: usize) -> Vec<(f64, f64)> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use ed_particles::Geometry;
 
     #[test]
     fn profile_lies_on_the_wall() {
@@ -331,7 +442,7 @@ mod tests {
 
     #[test]
     fn statistics_and_frames_have_matching_sizes() {
-        let mut s = ParticlesSim::new("sharp", 1e-3, 3).unwrap();
+        let mut s = ParticlesSim::new("sharp", false, 1e-3, 3).unwrap();
         s.set_field("neck", 20.0).unwrap();
         s.release(500, 200).unwrap();
         assert!(s.has_reference());
@@ -353,7 +464,7 @@ mod tests {
 
     #[test]
     fn field_off_has_no_reference_and_bad_input_is_rejected() {
-        let mut s = ParticlesSim::new("funnel", 1e-4, 1).unwrap();
+        let mut s = ParticlesSim::new("funnel", false, 1e-4, 1).unwrap();
         s.release(10, 10).unwrap();
         assert!(!s.has_reference());
         assert!(s.survival(true).is_empty());
@@ -368,7 +479,7 @@ mod tests {
     fn outward_field_empties_the_spine_faster() {
         for kind in ["uniform", "neck"] {
             let run = |dv: f64| {
-                let mut s = ParticlesSim::new("sharp", 1e-3, 5).unwrap();
+                let mut s = ParticlesSim::new("sharp", false, 1e-3, 5).unwrap();
                 s.set_field(kind, dv).unwrap();
                 s.release(400, 0).unwrap();
                 s.step(3000);
@@ -380,7 +491,7 @@ mod tests {
 
     #[test]
     fn reference_keeps_running_after_the_main_population_has_escaped() {
-        let mut s = ParticlesSim::new("sharp", 2e-3, 7).unwrap();
+        let mut s = ParticlesSim::new("sharp", false, 2e-3, 7).unwrap();
         s.set_field("uniform", 200.0).unwrap();
         s.release(50, 50).unwrap();
         while s.step(1000) > 0 {}
@@ -394,5 +505,42 @@ mod tests {
         // Turning the field off drops the reference.
         s.set_field("off", 0.0).unwrap();
         assert!(!s.has_reference());
+    }
+
+    #[test]
+    fn dendrite_mode_shows_escaped_ions_until_they_leave_its_ends() {
+        let mut s = ParticlesSim::new("funnel", true, 2e-3, 9).unwrap();
+        assert!(s.dendrite_radius() > s.neck_radius() && s.dendrite_half_length() > 1.0);
+        s.set_field("uniform", 40.0).unwrap();
+        s.release(300, 100).unwrap();
+        let mut seen_in_dendrite = 0;
+        while s.n_alive() > 0 || s.reference_alive() > 0 {
+            s.step(500);
+            let (n, d) = (s.n_alive(), s.n_in_dendrite());
+            assert_eq!(s.positions().len(), 3 * (n + d));
+            let regions = s.regions();
+            assert_eq!(regions.len(), n + d);
+            let pos = s.positions();
+            for (i, &r) in regions.iter().enumerate().skip(n) {
+                assert_eq!(r == 2.0, pos[3 * i + 2] < 0.0, "escaped ion {i}");
+            }
+            assert!(regions[..n].iter().all(|&v| v < 2.0));
+            assert_eq!(s.mfpt(false)[2] as usize, 300 - n);
+            seen_in_dendrite = seen_in_dendrite.max(d);
+        }
+        assert!(seen_in_dendrite > 50, "{seen_in_dendrite}");
+        // The reference is timed against an absorbing base, so none of its ions linger.
+        assert_eq!(s.reference.as_ref().unwrap().n_escaped_moving(), 0);
+        let t = s.passage_time_ms();
+        // The escaped ions keep moving after the spine has emptied, then the run ends.
+        while s.step(1000) > 0 {}
+        assert_eq!((s.n_in_dendrite(), s.passage_time_ms()), (0, t));
+        assert!(s.time_ms() >= t);
+        assert_eq!(
+            ParticlesSim::new("sharp", false, 1e-3, 1)
+                .unwrap()
+                .dendrite_radius(),
+            0.0
+        );
     }
 }
