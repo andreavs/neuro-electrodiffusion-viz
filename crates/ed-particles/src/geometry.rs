@@ -21,6 +21,15 @@ pub trait Geometry {
     /// absorbing part of the boundary. Other walls reflect.
     fn absorbs(&self, b: Vec3) -> bool;
 
+    /// Whether the inside point `p` lies past the first-passage target, so a particle that
+    /// reaches it counts as escaped but keeps moving. Domains whose target is an absorbing
+    /// wall keep the default. Only where a step ends is tested, so a step that dips into the
+    /// region and back is not counted (unlike absorbing walls, which see the whole segment).
+    #[inline]
+    fn escaped(&self, _p: Vec3) -> bool {
+        false
+    }
+
     /// Outward unit normal of the boundary near `p`, from the gradient of the SDF.
     fn normal(&self, p: Vec3) -> Vec3 {
         const H: f64 = 1e-6;
