@@ -21,6 +21,7 @@ impl KnpSolver {
     pub fn clear_sources(&mut self) {
         for &cell in &self.source_cells {
             self.src.iter_mut().for_each(|s| s[cell] = 0.0);
+            self.cap[cell] = 0.0;
             self.has_source[cell] = false;
         }
         self.source_cells.clear();
