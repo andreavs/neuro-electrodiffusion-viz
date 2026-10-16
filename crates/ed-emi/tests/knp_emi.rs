@@ -283,9 +283,13 @@ fn unstructured_mesh_matches_grid_mesh() {
         assert!(s.stimulate_where(1, |p| p[0] <= 25.0, 4.0, 0.0) > 0);
     }
     let mut peak: f64 = -100.0;
+    let its = |s: &EmiSolver| s.stats().potential.map_or(0, |c| c.iterations);
+    let (mut its_grid, mut its_free) = (0, 0);
     while grid.t() < 3.0 {
         grid.step().unwrap();
         free.step().unwrap();
+        its_grid += its(&grid);
+        its_free += its(&free);
         let diff = grid
             .phi_m()
             .iter()
@@ -296,4 +300,9 @@ fn unstructured_mesh_matches_grid_mesh() {
         peak = peak.max(phi_m_at(&free, 1, 160.0));
     }
     assert!(peak > 0.0, "the action potential reached x = 160 µm");
+    // Graph aggregation copes with the 5 µm × 0.3 µm elements about as well as x-planes.
+    assert!(
+        its_free <= 2 * its_grid,
+        "{its_free} vs {its_grid} CG iterations"
+    );
 }

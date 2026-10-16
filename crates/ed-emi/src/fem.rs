@@ -8,7 +8,7 @@
 
 use ed_core::linalg::{CgOptions, CgStats, CsrMatrix, Pcg, Preconditioner};
 
-use crate::mesh::Mesh;
+use crate::mesh::{reverse_cuthill_mckee, Mesh};
 
 /// Gradients of the four barycentric (hat) functions and the volume of a tetrahedron.
 pub fn tet_gradients(p: [[f64; 3]; 4]) -> ([[f64; 3]; 4], f64) {
@@ -169,10 +169,17 @@ impl Stiffness {
     }
 }
 
+/// Strength threshold: DOF `j` is a strong neighbour of `i` if its coupling is at least
+/// this fraction of `i`'s strongest one.
+const STRONG: f64 = 0.25;
+
 /// Aggregates for [`ed_core::linalg::TwoLevel`]. Grid meshes use one aggregate per
 /// (x-plane, subdomain), numbered plane by plane, which suits long axons along x. Other
-/// meshes use greedy graph aggregation: each aggregate is a DOF and its neighbours in the
-/// same subdomain, numbered in DOF order so the coarse matrix stays narrow-banded.
+/// meshes use greedy aggregation along strong stiffness couplings (so stretched elements
+/// do not lump weakly coupled DOFs), numbered by Cuthill-McKee on the coarse graph to keep
+/// its band narrow. The coarse problem is about a tenth of the fine one and is factorised
+/// as a band, which suits meshes up to some 10⁴ DOFs (the browser's budget); much larger
+/// meshes would need a third level.
 pub fn aggregates(mesh: &Mesh) -> Vec<u32> {
     match &mesh.grid {
         Some(g) => plane_aggregates(mesh, g.axes[0].len()),
@@ -199,31 +206,59 @@ fn plane_aggregates(mesh: &Mesh, nx: usize) -> Vec<u32> {
 
 fn graph_aggregates(mesh: &Mesh) -> Vec<u32> {
     let n = mesh.n_dofs();
-    // Tets never mix subdomains, so tet neighbours share the DOF's subdomain.
-    let mut adj: Vec<Vec<u32>> = vec![Vec::new(); n];
-    for tet in &mesh.tets {
-        for &a in tet {
-            adj[a as usize].extend(tet.iter().filter(|&&b| b != a));
+    // Couplings −a_ij of the unit-weight stiffness. Tets never mix subdomains, so
+    // neighbours share the DOF's subdomain.
+    let mut adj: Vec<Vec<(u32, f64)>> = vec![Vec::new(); n];
+    for (t, tet) in mesh.tets.iter().enumerate() {
+        let s = tet_stiffness(mesh.tet_points(t));
+        for a in 0..4 {
+            for b in 0..4 {
+                if a != b {
+                    adj[tet[a] as usize].push((tet[b], -s[a][b]));
+                }
+            }
         }
     }
     for l in &mut adj {
-        l.sort_unstable();
-        l.dedup();
+        l.sort_unstable_by_key(|e| e.0);
+        let mut merged: Vec<(u32, f64)> = Vec::with_capacity(l.len());
+        for &(j, w) in l.iter() {
+            match merged.last_mut() {
+                Some(last) if last.0 == j => last.1 += w,
+                _ => merged.push((j, w)),
+            }
+        }
+        *l = merged;
     }
+    let strong: Vec<Vec<u32>> = adj
+        .iter()
+        .map(|l| {
+            let max = l.iter().map(|e| e.1).fold(0.0, f64::max);
+            l.iter()
+                .filter(|e| e.1 > 0.0 && e.1 >= STRONG * max)
+                .map(|e| e.0)
+                .collect()
+        })
+        .collect();
     let mut agg = vec![u32::MAX; n];
     let mut n_agg = 0;
-    // Seeds: DOFs whose whole neighbourhood is still free.
+    // Seeds: DOFs whose strong neighbourhood is still free.
     for d in 0..n {
-        if agg[d] == u32::MAX && adj[d].iter().all(|&u| agg[u as usize] == u32::MAX) {
+        if agg[d] == u32::MAX && strong[d].iter().all(|&u| agg[u as usize] == u32::MAX) {
             agg[d] = n_agg;
-            adj[d].iter().for_each(|&u| agg[u as usize] = n_agg);
+            strong[d].iter().for_each(|&u| agg[u as usize] = n_agg);
             n_agg += 1;
         }
     }
-    // Leftovers join the aggregate of an aggregated neighbour, or start their own.
+    // Leftovers join the aggregate of a strong (else any) aggregated neighbour, or start
+    // their own (strength is not symmetric, so that can happen).
     for d in 0..n {
         if agg[d] == u32::MAX {
-            agg[d] = match adj[d].iter().find(|&&u| agg[u as usize] != u32::MAX) {
+            let near = strong[d]
+                .iter()
+                .chain(adj[d].iter().map(|e| &e.0))
+                .find(|&&u| agg[u as usize] != u32::MAX);
+            agg[d] = match near {
                 Some(&u) => agg[u as usize],
                 None => {
                     n_agg += 1;
@@ -232,7 +267,27 @@ fn graph_aggregates(mesh: &Mesh) -> Vec<u32> {
             };
         }
     }
-    agg
+    // Renumber by Cuthill-McKee on the coarse graph, membrane links included.
+    let n_agg = n_agg as usize;
+    let mut coarse: Vec<Vec<u32>> = vec![Vec::new(); n_agg];
+    let mut link = |a: usize, b: usize| {
+        let (ga, gb) = (agg[a], agg[b]);
+        if ga != gb {
+            coarse[ga as usize].push(gb);
+        }
+    };
+    for (i, l) in adj.iter().enumerate() {
+        l.iter().for_each(|e| link(i, e.0 as usize));
+    }
+    for m in &mesh.membrane {
+        link(m.inner as usize, m.outer as usize);
+        link(m.outer as usize, m.inner as usize);
+    }
+    let mut renumber = vec![0u32; n_agg];
+    for (new, old) in reverse_cuthill_mckee(coarse).into_iter().enumerate() {
+        renumber[old] = new as u32;
+    }
+    agg.iter().map(|&g| renumber[g as usize]).collect()
 }
 
 /// Solves `A x = b` as a correction `x += δ`, `A δ = b − A x`, so the tolerance is
@@ -307,8 +362,20 @@ mod tests {
             assert_eq!(*t, mesh.dof_tag[d]);
         }
         assert!(tag.iter().all(Option::is_some));
-        // Aggregates are a DOF and its neighbours: far fewer than DOFs.
-        assert!(n_agg * 8 < mesh.n_dofs(), "{n_agg} of {}", mesh.n_dofs());
+        // Aggregates are a DOF and its strong neighbours: far fewer than DOFs.
+        assert!(n_agg * 4 < mesh.n_dofs(), "{n_agg} of {}", mesh.n_dofs());
+        // The coarse band is narrow next to the coarse size.
+        let k = Stiffness::new(&mesh);
+        let mut a = k.new_matrix();
+        let n_tets = mesh.tets.len();
+        k.assemble(
+            &vec![1.0; n_tets],
+            &vec![0.0; mesh.n_dofs()],
+            &vec![1.0; mesh.membrane.len()],
+            &mut a,
+        );
+        let pc = ed_core::linalg::TwoLevel::new(&a, agg);
+        assert!(pc.coarse_bandwidth() * 2 < pc.coarse_len());
     }
 
     #[test]
