@@ -51,9 +51,16 @@ export function escapeHtml(s: string): string {
 
 /** Display a number with precision matching the slider step. */
 export function formatNumber(value: number, step: number, unit?: string): string {
-  const decimals = step >= 1 ? 0 : Math.min(6, Math.ceil(-Math.log10(step) - 1e-9));
+  const decimals = Math.min(6, stepDecimals(step));
   const text = value.toFixed(decimals);
   return unit ? `${text} ${unit}` : text;
+}
+
+/** Digits after the decimal point in `step` (0.25 → 2, 2.5 → 1, 1e-4 → 4). */
+export function stepDecimals(step: number): number {
+  const [mantissa = '', exp] = step.toExponential().split('e');
+  const frac = mantissa.split('.')[1]?.length ?? 0;
+  return Math.max(0, frac - Number(exp));
 }
 
 /** Snap a slider value into range and onto the step grid (relative to min). */
@@ -177,7 +184,7 @@ export function renderPanel(schema: ParamSchema, values: Params, running: boolea
       <dt>Sim time</dt><dd data-stat="time">–</dd>
       <dt>Steps/s</dt><dd data-stat="steps">–</dd>
       <dt>Sim ms/s</dt><dd data-stat="rate">–</dd>
-      <dt>Render</dt><dd data-stat="fps">–</dd>
+      <dt>Frames</dt><dd data-stat="fps">–</dd>
     </dl>`;
 }
 
@@ -228,7 +235,15 @@ export class ControlPanel {
     this.el.addEventListener('input', this.onInput);
     this.el.addEventListener('change', this.onInput);
     this.el.addEventListener('click', this.onClick);
-    this.unregister = client.addDisposer(() => this.destroy());
+    // The worker stops itself on a solver error; reflect that in the Play button.
+    const offMessages = client.on((m) => {
+      if (m.type === 'error') this.showRunning(false);
+    });
+    const offDisposer = client.addDisposer(() => this.destroy());
+    this.unregister = () => {
+      offMessages();
+      offDisposer();
+    };
     client.setBudget(speedToBudgetMs(this.values[SPEED_SPEC.key] as number));
   }
 
@@ -243,9 +258,13 @@ export class ControlPanel {
   }
 
   setRunning(running: boolean): void {
+    this.showRunning(running);
+    this.client.run(running);
+  }
+
+  private showRunning(running: boolean): void {
     this.running = running;
     this.playButton.textContent = running ? 'Pause' : 'Play';
-    this.client.run(running);
   }
 
   updateStats(s: StatsView): void {
@@ -274,7 +293,9 @@ export class ControlPanel {
     if (value === undefined || value === this.values[spec.key]) return;
     this.values[spec.key] = value;
     if (spec.kind === 'number') {
-      const out = this.el.querySelector(`[data-out="${CSS.escape(spec.key)}"]`);
+      const out = [...this.el.querySelectorAll<HTMLElement>('[data-out]')].find(
+        (o) => o.dataset.out === spec.key,
+      );
       if (out) out.textContent = formatNumber(value as number, spec.step, spec.unit);
     }
     if (spec.key === SPEED_SPEC.key) this.client.setBudget(speedToBudgetMs(value as number));

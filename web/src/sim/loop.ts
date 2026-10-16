@@ -138,6 +138,10 @@ export class RunLoop {
     this.solver = this.factories[this.scale!](this.params);
     this.solverMs = 0;
     this.resetRates();
+    // Whatever frame was in flight belongs to the old solver and may never be
+    // acked (the client drops it on create); its late ack is ignored by seq.
+    this.awaitingAck = false;
+    this.ticksAhead = 0;
     this.dirty = true;
     this.flush();
     if (this.running) this.scheduleTick();
@@ -165,13 +169,13 @@ export class RunLoop {
       this.solver.advance(this.budgetMs);
       const spent = this.host.now() - t0;
       this.solverMs = this.solverMs === 0 ? spent : 0.9 * this.solverMs + 0.1 * spent;
+      this.dirty = true;
+      if (this.awaitingAck) this.ticksAhead++;
+      this.flush();
     } catch (err) {
       this.fail(err);
       return;
     }
-    this.dirty = true;
-    if (this.awaitingAck) this.ticksAhead++;
-    this.flush();
     this.scheduleTick();
   }
 
@@ -179,17 +183,20 @@ export class RunLoop {
   private flush(): void {
     if (!this.dirty || this.awaitingAck || !this.solver) return;
     const f = this.solver.frame();
-    this.seq++;
-    this.awaitingAck = true;
-    this.dirty = false;
+    const seq = this.seq + 1;
+    // Post first: if it throws (e.g. DataCloneError) no frame is in flight,
+    // so we must not wait for an ack.
     this.post({
       type: 'frame',
-      seq: this.seq,
+      seq,
       timeMs: f.timeMs,
       fields: f.fields,
       stats: f.stats,
       runtime: this.runtimeStats(f.timeMs, f.steps ?? 0),
     });
+    this.seq = seq;
+    this.awaitingAck = true;
+    this.dirty = false;
   }
 
   private runtimeStats(simMs: number, steps: number): RuntimeStats {

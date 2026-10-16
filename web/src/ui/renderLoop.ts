@@ -10,14 +10,15 @@ export class FpsMeter {
 
   tick(now: number): number {
     this.times.push(now);
-    while (this.times.length > 1 && now - this.times[0]! > this.windowMs) this.times.shift();
-    return this.fps;
+    return this.fpsAt(now);
   }
 
-  get fps(): number {
+  /** Rate as of `now`; decays to 0 when ticks stop arriving. */
+  fpsAt(now: number): number {
+    while (this.times.length > 0 && now - this.times[0]! > this.windowMs) this.times.shift();
     const n = this.times.length;
     if (n < 2) return 0;
-    const span = this.times[n - 1]! - this.times[0]!;
+    const span = Math.max(now - this.times[0]!, this.times[n - 1]! - this.times[0]!);
     return span > 0 ? ((n - 1) * 1000) / span : 0;
   }
 }
@@ -54,15 +55,16 @@ export function startRenderLoop(client: SimClient, opts: RenderLoopOptions): () 
     if (frame) {
       last = frame;
       opts.draw(frame);
+      // Count drawn frames, so a slow simulation shows up as a low rate.
+      meter.tick(now);
     }
-    meter.tick(now);
     if (opts.stats && last && now - lastStats >= interval) {
       lastStats = now;
       opts.stats.updateStats({
         simTimeMs: last.timeMs,
         stepsPerSec: last.runtime.stepsPerSec,
         simMsPerSec: last.runtime.simMsPerSec,
-        fps: meter.fps,
+        fps: meter.fpsAt(now),
       });
     }
   };

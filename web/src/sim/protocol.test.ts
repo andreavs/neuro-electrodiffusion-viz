@@ -22,3 +22,20 @@ describe('transferablesOf', () => {
     expect(transferablesOf({ type: 'ready', version: '0.1.0' })).toEqual([]);
   });
 });
+
+describe('transferablesOf with shared buffers', () => {
+  it('lists a buffer once when fields are views into it', () => {
+    const buf = new Float32Array(8);
+    const out = transferablesOf({
+      type: 'frame',
+      seq: 1,
+      timeMs: 0,
+      fields: [
+        { name: 'a', shape: [4], data: buf.subarray(0, 4) },
+        { name: 'b', shape: [4], data: buf.subarray(4) },
+      ],
+      runtime: { running: false, stepsPerSec: 0, simMsPerSec: 0, solverMs: 0 },
+    });
+    expect(out).toEqual([buf.buffer]);
+  });
+});

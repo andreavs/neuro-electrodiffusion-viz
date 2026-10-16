@@ -1,21 +1,8 @@
 import { describe, expect, it, vi } from 'vitest';
-import { FrameMailbox, SimClient, type WorkerLike } from './client';
-import type { FrameMessage, FromWorker, ToWorker } from './protocol';
+import { FrameMailbox, SimClient } from './client';
+import type { FrameMessage } from './protocol';
+import { FakeWorker } from './testing/fakeWorker';
 
-class FakeWorker implements WorkerLike {
-  sent: ToWorker[] = [];
-  terminated = false;
-  onmessage: ((ev: MessageEvent<FromWorker>) => void) | null = null;
-  postMessage(msg: ToWorker): void {
-    this.sent.push(msg);
-  }
-  terminate(): void {
-    this.terminated = true;
-  }
-  emit(msg: FromWorker): void {
-    this.onmessage?.({ data: msg } as MessageEvent<FromWorker>);
-  }
-}
 
 function frame(seq: number): FrameMessage {
   return {
@@ -112,5 +99,22 @@ describe('SimClient', () => {
     off();
     client.terminate();
     expect(disposer).not.toHaveBeenCalled();
+  });
+});
+
+describe('SimClient worker failures', () => {
+  it('rejects ready() when the worker fails to load', async () => {
+    const worker = new FakeWorker();
+    const client = new SimClient(() => worker);
+    const p = client.ready();
+    worker.fail('import failed');
+    await expect(p).rejects.toThrow('import failed');
+  });
+
+  it('detaches worker handlers on terminate', () => {
+    const worker = new FakeWorker();
+    new SimClient(() => worker).terminate();
+    expect(worker.onerror).toBeNull();
+    expect(worker.onmessageerror).toBeNull();
   });
 });

@@ -62,5 +62,7 @@ export type FromWorker =
 
 /** Typed arrays to hand over as transferables when posting a message. */
 export function transferablesOf(msg: FromWorker): Transferable[] {
-  return msg.type === 'frame' ? msg.fields.map((f) => f.data.buffer as ArrayBuffer) : [];
+  if (msg.type !== 'frame') return [];
+  // Fields may be views into one buffer; listing a buffer twice throws DataCloneError.
+  return [...new Set(msg.fields.map((f) => f.data.buffer as ArrayBuffer))];
 }

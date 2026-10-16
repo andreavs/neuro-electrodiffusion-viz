@@ -229,4 +229,48 @@ describe('RunLoop', () => {
     expect(solvers[0]!.disposed).toBe(true);
     expect(solvers[1]!.params).toEqual({ a: 1 });
   });
+
+  it('create or reset while a frame is unacknowledged still posts a frame (no deadlock)', () => {
+    loop.handle({ type: 'create', scale: 'knp', params: {} });
+    loop.handle({ type: 'run', running: true });
+    host.runTasks();
+    // The client dropped frame 1 without acking it, then re-created.
+    loop.handle({ type: 'create', scale: 'knp', params: { dt: 0.2 } });
+    expect(host.lastFrame()).toMatchObject({ seq: 2, timeMs: 0 });
+    loop.handle({ type: 'ack', seq: 1 }); // late ack for the old frame is ignored
+    loop.handle({ type: 'reset' });
+    expect(host.lastFrame().seq).toBe(3);
+    loop.handle({ type: 'ack', seq: 3 });
+    host.runTasks();
+    expect(solvers[2]!.advances).toBeGreaterThan(0);
+  });
+
+  it('reports errors thrown by frame() during a tick and stops', () => {
+    loop.handle({ type: 'create', scale: 'knp', params: {} });
+    loop.handle({ type: 'ack', seq: 1 });
+    solvers[0]!.frame = () => {
+      throw new Error('panic in frame');
+    };
+    loop.handle({ type: 'run', running: true });
+    host.runTasks();
+    expect(host.posted.at(-1)).toEqual({ type: 'error', message: 'panic in frame' });
+    expect(loop.isRunning).toBe(false);
+    expect(loop.hasPendingTick).toBe(false);
+  });
+
+  it('does not wait for an ack when posting a frame throws', () => {
+    let throwOnce = true;
+    const post = host.post.bind(host);
+    host.post = (msg) => {
+      if (msg.type === 'frame' && throwOnce) {
+        throwOnce = false;
+        throw new Error('DataCloneError');
+      }
+      post(msg);
+    };
+    loop.handle({ type: 'create', scale: 'knp', params: {} });
+    expect(host.posted).toEqual([{ type: 'error', message: 'DataCloneError' }]);
+    loop.handle({ type: 'setParams', params: { dt: 0.3 } });
+    expect(host.lastFrame()).toMatchObject({ seq: 1 });
+  });
 });

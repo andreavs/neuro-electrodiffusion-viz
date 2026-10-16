@@ -11,6 +11,7 @@ import {
   renderControl,
   renderPanel,
   speedToBudgetMs,
+  stepDecimals,
   type ParamSchema,
 } from './controls';
 import { DEFAULT_BUDGET_MS } from '../sim/loop';
@@ -113,6 +114,10 @@ describe('formatting helpers', () => {
     expect(formatNumber(0.3, 0.1, 'ms')).toBe('0.3 ms');
     expect(formatNumber(0.25, 0.05)).toBe('0.25');
     expect(formatNumber(1e-4, 1e-4)).toBe('0.0001');
+    expect(formatNumber(0.75, 0.25)).toBe('0.75');
+    expect(formatNumber(2.5, 2.5)).toBe('2.5');
+    expect(stepDecimals(10)).toBe(0);
+    expect(stepDecimals(0.001)).toBe(3);
   });
 
   it('clamps to step without float noise', () => {

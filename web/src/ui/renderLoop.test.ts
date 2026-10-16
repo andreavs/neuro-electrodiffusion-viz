@@ -1,20 +1,9 @@
 import { describe, expect, it, vi } from 'vitest';
-import { SimClient, type WorkerLike } from '../sim/client';
-import type { FromWorker, ToWorker } from '../sim/protocol';
+import { SimClient } from '../sim/client';
+import { FakeWorker } from '../sim/testing/fakeWorker';
 import type { StatsView } from './controls';
 import { FpsMeter, startRenderLoop } from './renderLoop';
 
-class FakeWorker implements WorkerLike {
-  sent: ToWorker[] = [];
-  onmessage: ((ev: MessageEvent<FromWorker>) => void) | null = null;
-  postMessage(msg: ToWorker): void {
-    this.sent.push(msg);
-  }
-  terminate(): void {}
-  emit(msg: FromWorker): void {
-    this.onmessage?.({ data: msg } as MessageEvent<FromWorker>);
-  }
-}
 
 /** Manual requestAnimationFrame. */
 function fakeRaf() {
@@ -42,7 +31,8 @@ describe('FpsMeter', () => {
     const m = new FpsMeter(1000);
     expect(m.tick(0)).toBe(0);
     for (let i = 1; i <= 120; i++) m.tick((i * 1000) / 60);
-    expect(m.fps).toBeCloseTo(60, 5);
+    expect(m.fpsAt(2000)).toBeCloseTo(60, 5);
+    expect(m.fpsAt(5000)).toBe(0);
   });
 });
 

@@ -7,6 +7,8 @@ type Listener = (msg: FromWorker) => void;
 export interface WorkerLike {
   postMessage(msg: ToWorker): void;
   onmessage: ((ev: MessageEvent<FromWorker>) => void) | null;
+  onerror: ((ev: ErrorEvent) => void) | null;
+  onmessageerror: ((ev: MessageEvent) => void) | null;
   terminate(): void;
 }
 
@@ -49,11 +51,20 @@ export class SimClient {
 
   constructor(makeWorker: () => WorkerLike = defaultWorker) {
     this.worker = makeWorker();
-    this.worker.onmessage = (ev: MessageEvent<FromWorker>) => {
-      const msg = ev.data;
-      if (msg.type === 'frame') this.mailbox.put(msg);
-      for (const l of this.listeners) l(msg);
+    this.worker.onmessage = (ev: MessageEvent<FromWorker>) => this.dispatch(ev.data);
+    // Load failures and uncaught worker exceptions surface as `error` messages,
+    // so `ready()` rejects instead of hanging.
+    this.worker.onerror = (ev: ErrorEvent) => {
+      ev.preventDefault?.();
+      this.dispatch({ type: 'error', message: ev.message || 'Simulation worker failed' });
     };
+    this.worker.onmessageerror = () =>
+      this.dispatch({ type: 'error', message: 'Could not decode a message from the simulation worker' });
+  }
+
+  private dispatch(msg: FromWorker): void {
+    if (msg.type === 'frame') this.mailbox.put(msg);
+    for (const l of this.listeners) l(msg);
   }
 
   send(msg: ToWorker): void {
@@ -131,6 +142,8 @@ export class SimClient {
     this.listeners.clear();
     this.mailbox.clear();
     this.worker.onmessage = null;
+    this.worker.onerror = null;
+    this.worker.onmessageerror = null;
     this.worker.terminate();
   }
 }
