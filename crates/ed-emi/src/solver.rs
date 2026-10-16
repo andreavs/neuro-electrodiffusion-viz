@@ -66,6 +66,27 @@ impl Default for EmiParams {
     }
 }
 
+/// Why [`EmiSolver::step`] failed. The state is then unusable; build a new solver.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum StepError {
+    /// A linear solve hit its iteration limit.
+    NotConverged,
+    /// A potential or concentration became non-finite, or a concentration non-positive
+    /// (typically a time step too large for the membrane currents).
+    InvalidState,
+}
+
+impl std::fmt::Display for StepError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            Self::NotConverged => "linear solve did not converge",
+            Self::InvalidState => "non-finite potential or non-positive concentration",
+        })
+    }
+}
+
+impl std::error::Error for StepError {}
+
 /// Iteration counts of the last step.
 #[derive(Debug, Clone, Copy, Default, PartialEq)]
 pub struct StepStats {
@@ -86,6 +107,10 @@ pub struct EmiSolver {
     i_m: Vec<f64>,
     i_ch_mean: [Vec<f64>; 3],
     stats: StepStats,
+    /// Potential CG iterations just after the last preconditioner refresh.
+    pc_iterations: usize,
+    /// Refresh the potential preconditioner on the next step.
+    pc_stale: bool,
     psi: f64,
     stiffness: Stiffness,
     a_phi: CsrMatrix,
@@ -107,10 +132,29 @@ pub struct EmiSolver {
     defect: Vec<f64>,
 }
 
+/// Tolerances below ~1e-10 stall on roundoff in the constant-null-space potential solve;
+/// `rtol ≥ 1` would skip every solve.
+fn valid_accuracy(rtol: f64, ode_substeps: usize) -> bool {
+    (1e-10..1.0).contains(&rtol) && ode_substeps > 0
+}
+
 impl EmiSolver {
     /// A solver at rest: uniform initial concentrations, φ_e = 0, φ_i = φ_M at the membrane
-    /// rest state for those concentrations.
+    /// rest state for those concentrations. Panics unless `dt` and `ode_substeps` are
+    /// positive, `1e-10 ≤ rtol < 1`, and the mesh has extracellular space.
     pub fn new(mesh: Mesh, params: EmiParams) -> Self {
+        assert!(
+            params.dt > 0.0 && params.dt.is_finite(),
+            "dt must be positive"
+        );
+        assert!(
+            valid_accuracy(params.rtol, params.ode_substeps),
+            "need 1e-10 ≤ rtol < 1 and substeps > 0"
+        );
+        assert!(
+            mesh.dof_tag.contains(&0),
+            "the mesh needs extracellular space"
+        );
         let n = mesh.n_dofs();
         let c0 = params.initial;
         let patches = MembranePatches::new(mesh.membrane.len(), params.membrane, c0);
@@ -158,6 +202,8 @@ impl EmiSolver {
             i_m: vec![0.0; mesh.membrane.len()],
             i_ch_mean: [0, 1, 2].map(|_| vec![0.0; mesh.membrane.len()]),
             stats: StepStats::default(),
+            pc_iterations: 0,
+            pc_stale: false,
             t: 0.0,
             steps: 0,
             phi,
@@ -248,8 +294,36 @@ impl EmiSolver {
         self.stats
     }
 
+    /// Changes Δt, reassembling the concentration matrices. Panics unless `dt > 0`.
+    pub fn set_dt(&mut self, dt: f64) {
+        assert!(dt > 0.0 && dt.is_finite(), "dt must be positive");
+        self.params.dt = dt;
+        let n_tets = self.mesh.tets.len();
+        let shift: Vec<f64> = self.mesh.lumped_volume.iter().map(|v| v / dt).collect();
+        let no_coupling = vec![0.0; self.mesh.membrane.len()];
+        for (k, sp) in SPECIES.iter().enumerate() {
+            let a = &mut self.a_conc[k];
+            self.stiffness
+                .assemble(&vec![sp.d; n_tets], &shift, &no_coupling, a);
+            self.pc_conc[k].update(a);
+        }
+        // The membrane coupling C_M/Δt in the potential matrix changes too.
+        self.pc_stale = true;
+    }
+
+    /// Changes the linear solver tolerance and the ODE substeps. Panics unless
+    /// `1e-10 ≤ rtol < 1` and `ode_substeps > 0`.
+    pub fn set_accuracy(&mut self, rtol: f64, ode_substeps: usize) {
+        assert!(
+            valid_accuracy(rtol, ode_substeps),
+            "need 1e-10 ≤ rtol < 1 and substeps > 0"
+        );
+        self.params.rtol = rtol;
+        self.params.ode_substeps = ode_substeps;
+    }
+
     /// Advances the solution by one time step Δt.
-    pub fn step(&mut self) {
+    pub fn step(&mut self) -> Result<(), StepError> {
         let dt = self.params.dt;
         let opts = CgOptions {
             rtol: self.params.rtol,
@@ -330,8 +404,15 @@ impl EmiSolver {
         self.stiffness
             .assemble(&self.sigma, rhs, &self.coupling, &mut self.a_phi);
         // σ drifts slowly with the concentrations, so the preconditioner is refreshed only
-        // now and then; PCG stays exact for any fixed SPD preconditioner.
-        if self.steps % PC_REFRESH == 0 {
+        // now and then, or when the iteration count has doubled (a synapse opening); PCG
+        // stays exact for any fixed SPD preconditioner.
+        let stale = self
+            .stats
+            .potential
+            .is_some_and(|s| s.iterations > 2 * self.pc_iterations + 5);
+        let refresh = self.steps % PC_REFRESH == 0 || stale || self.pc_stale;
+        self.pc_stale = false;
+        if refresh {
             self.pc_phi.update(&self.a_phi);
         }
 
@@ -367,6 +448,9 @@ impl EmiSolver {
             },
         );
         self.stats.potential = Some(stats);
+        if refresh {
+            self.pc_iterations = stats.iterations;
+        }
         // Only jumps and gradients of φ matter; fix the gauge at mean φ_e = 0.
         let (mut sum, ecs) = (0.0, self.domain_volume[0]);
         for d in 0..self.phi.len() {
@@ -451,6 +535,47 @@ impl EmiSolver {
         }
         self.t += dt;
         self.steps += 1;
+
+        // A non-finite state also breaks CG, so check it first for the more useful error.
+        let positive = self
+            .conc
+            .iter()
+            .flatten()
+            .all(|&c| c > 0.0 && c.is_finite());
+        if !positive || !self.phi.iter().all(|p| p.is_finite()) {
+            return Err(StepError::InvalidState);
+        }
+        let stats = self
+            .stats
+            .concentration
+            .iter()
+            .chain([&self.stats.potential]);
+        if !stats.flatten().all(|s| s.converged) {
+            return Err(StepError::NotConverged);
+        }
+        Ok(())
+    }
+
+    /// Total amount of species `k` in subdomain `tag` (lumped), mM·µm³.
+    pub fn amount(&self, k: usize, tag: u16) -> f64 {
+        (0..self.mesh.n_dofs())
+            .filter(|&d| self.mesh.dof_tag[d] == tag)
+            .map(|d| self.mesh.lumped_volume[d] * self.conc[k][d])
+            .sum()
+    }
+
+    /// Largest nodal |Σ_k z_k [k]| over all DOFs, mM.
+    pub fn max_charge_imbalance(&self) -> f64 {
+        (0..self.mesh.n_dofs())
+            .map(|d| {
+                SPECIES
+                    .iter()
+                    .zip(&self.conc)
+                    .map(|(sp, c)| sp.z as f64 * c[d])
+                    .sum::<f64>()
+                    .abs()
+            })
+            .fold(0.0, f64::max)
     }
 }
 
@@ -459,20 +584,56 @@ mod tests {
     use super::*;
     use crate::mesh::{Aabb, MeshSpec};
 
-    #[test]
-    fn axon_at_rest_stays_at_rest() {
+    fn axon(params: EmiParams) -> EmiSolver {
         let spec = MeshSpec {
             extent: [60.0, 0.8, 0.8],
             cells: vec![Aabb::new([5.0, 0.3, 0.3], [55.0, 0.5, 0.5])],
             max_h: [5.0, 0.3, 0.3],
         };
-        let mut s = EmiSolver::new(Mesh::build(&spec).unwrap(), EmiParams::default());
+        EmiSolver::new(Mesh::build(&spec).unwrap(), params)
+    }
+
+    #[test]
+    fn axon_at_rest_stays_at_rest_and_neutral_after_a_dt_change() {
+        let mut s = axon(EmiParams::default());
         let rest = s.phi_m()[0];
-        for _ in 0..100 {
-            s.step();
+        for i in 0..100 {
+            if i == 50 {
+                s.set_dt(0.05);
+            }
+            s.step().unwrap();
         }
         let drift = s.phi_m().iter().map(|v| (v - rest).abs());
         assert!(drift.fold(0.0, f64::max) < 0.5, "φ_M left rest {rest} mV");
-        assert!(s.stats().potential.unwrap().converged);
+        assert!(s.max_charge_imbalance() < 1e-3);
+        assert!((s.t() - 7.5).abs() < 1e-9);
+    }
+
+    #[test]
+    fn extracellular_potential_has_zero_mean() {
+        let mut s = axon(EmiParams::default());
+        s.stimulate(1, 0.0, 20.0, 4.0, 0.0);
+        for _ in 0..20 {
+            s.step().unwrap();
+        }
+        let m = s.mesh();
+        let mean: f64 = (0..m.n_dofs())
+            .filter(|&d| m.dof_tag[d] == 0)
+            .map(|d| m.lumped_volume[d] * s.phi()[d])
+            .sum();
+        assert!(mean.abs() < 1e-9 * s.domain_volume[0]);
+    }
+
+    #[test]
+    fn an_impossible_step_is_reported() {
+        let mut membrane = MembraneParams::HODGKIN_HUXLEY;
+        membrane.hodgkin_huxley = false;
+        let mut s = axon(EmiParams {
+            membrane,
+            ..EmiParams::default()
+        });
+        s.stimulate(1, 0.0, 60.0, 1e5, 0.0);
+        let failed = (0..20).map(|_| s.step()).find_map(Result::err);
+        assert!(failed.is_some());
     }
 }
