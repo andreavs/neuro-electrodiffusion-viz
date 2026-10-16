@@ -3,12 +3,12 @@ import { ShardRunner, shardTransferables } from './particleShard';
 import type { ParticlesWasm } from './particles';
 
 /** Each step removes one ion. */
-function fakeSim(geometry: string, log: string[]): ParticlesWasm {
+function fakeSim(geometry: string, log: string[], dendrite = false): ParticlesWasm {
   let alive = 0;
   let released = 0;
   let time = 0;
   let ref = false;
-  log.push(`new ${geometry}`);
+  log.push(`new ${geometry}${dendrite ? ' dendrite' : ''}`);
   return {
     set_field: (kind, dv) => void (ref = kind !== 'off' && dv !== 0),
     set_dt: () => {},
@@ -62,12 +62,13 @@ describe('ShardRunner', () => {
 
   it('ignores steps for another release and rebuilds only for a new geometry', () => {
     const log: string[] = [];
-    const r = new ShardRunner((g) => fakeSim(g, log), 1, () => 0);
+    const r = new ShardRunner((g, d) => fakeSim(g, log, d), 1, () => 0);
     expect(r.handle(step)).toBeNull();
     r.handle(start);
     expect(r.handle({ ...step, gen: 0 })).toBeNull();
     r.handle({ ...start, gen: 2 });
     r.handle({ ...start, gen: 3, geometry: 'funnel' });
-    expect(log).toEqual(['new sharp', 'free', 'new funnel']);
+    r.handle({ ...start, gen: 4, geometry: 'funnel', dendrite: true });
+    expect(log).toEqual(['new sharp', 'free', 'new funnel', 'free', 'new funnel dendrite']);
   });
 });

@@ -188,6 +188,7 @@ export class ShardedParticlesSolver implements WorkerSolver {
     this.merged = [];
     this.done = [];
     this.histTMax = 1;
+    this.profile = null; // the shape may change; the start replies bring the new one
     const counts = splitEvenly(n, this.active);
     const geometry = String(this.params.geometry);
     const dv = signedDrop(Number(this.params.dv), String(this.params.direction));
@@ -268,7 +269,9 @@ export class ShardedParticlesSolver implements WorkerSolver {
     const t = passageTime(this.merged);
     // The round where the last ion leaves is always sampled, so the curve ends at 0.
     const last = finished(round, this.nRef) || alive === 0;
-    if ((this.rounds++ % this.survivalEvery === 0 || last) && t > this.survival[this.survival.length - 2]!) {
+    // `t` can keep growing with the reference's clock, so stop once the curve has reached 0.
+    const open = this.survival[this.survival.length - 1]! > 0;
+    if ((this.rounds++ % this.survivalEvery === 0 || last) && open && t > this.survival[this.survival.length - 2]!) {
       // Thin before pushing, so the newest sample (maybe the last exit) is kept.
       if (this.survival.length / 2 + 1 >= SURVIVAL_CAPACITY) {
         // Keep t = 0 and every other sample; sample half as often from now on.
@@ -285,8 +288,9 @@ export class ShardedParticlesSolver implements WorkerSolver {
     const msPerStep = latest.reduce((a, s) => Math.max(a, s.msPerStep), 0);
     const steps = msPerStep > 0 ? Math.max(1, Math.min(MAX_STEPS_PER_ROUND, Math.floor(this.budgetMs / msPerStep))) : 4;
     // Exit-time axes end at the last exit, not when the last ion leaves the dendrite.
-    const alive = latest.reduce((a, s) => a + s.alive, 0);
-    const tMax = niceCeil(passageTime(latest) + (alive > 0 ? steps * Number(this.params.dt) : 0));
+    // Pad while any ion (main or reference) is still inside; the passage clocks then run on.
+    const exiting = latest.length === 0 || latest.some((s) => s.passageTime >= s.timeMs);
+    const tMax = niceCeil(passageTime(latest) + (exiting ? steps * Number(this.params.dt) : 0));
     const display = Math.ceil(DISPLAY_MAX / this.active);
     this.collect(this.active);
     for (let i = 0; i < this.active; i++)

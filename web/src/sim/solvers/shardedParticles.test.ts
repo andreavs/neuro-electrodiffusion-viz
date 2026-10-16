@@ -162,6 +162,11 @@ describe('ShardedParticlesSolver', () => {
     const surv = f.fields.find((x) => x.name === 'survival')!.data;
     expect(Array.from(surv.slice(-2))).toEqual([10_000, 0]);
     expect(solver.advance(12)).toBe(false);
+    // Switching back to an absorbing base forgets the dendrite before the shards reply.
+    solver.setParams({ outlet: 'absorb' });
+    expect(solver.frame().stats).toMatchObject({ dendriteRadius: 0, dendriteHalfLength: 0 });
+    flush();
+    expect(solver.frame().stats).toMatchObject({ dendriteRadius: 0, released: 30_000 });
   });
 
   it('stops stepping when the loop stops asking (paused)', () => {
