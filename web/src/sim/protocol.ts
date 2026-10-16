@@ -1,5 +1,8 @@
 import type { ScaleId } from '../scales/registry';
 
+/** A solver the worker can create: one per scale, plus extra scenarios of a scale. */
+export type SolverId = ScaleId | 'knp-sd';
+
 /**
  * Messages between the UI thread and the simulation worker.
  *
@@ -13,7 +16,7 @@ import type { ScaleId } from '../scales/registry';
  */
 export type ToWorker =
   | { type: 'init' }
-  | { type: 'create'; scale: ScaleId; params: Params }
+  | { type: 'create'; scale: SolverId; params: Params }
   | { type: 'run'; running: boolean }
   | { type: 'setParams'; params: Params }
   /** A one-shot action from a `button` control (e.g. "stimulate"); not replayed on reset. */

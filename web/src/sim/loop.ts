@@ -1,5 +1,4 @@
-import type { ScaleId } from '../scales/registry';
-import type { FromWorker, Params, RuntimeStats, ToWorker } from './protocol';
+import type { FromWorker, Params, RuntimeStats, SolverId, ToWorker } from './protocol';
 import type { SolverFactory, WorkerSolver } from './solver';
 
 /** Per-tick solver budget, leaving headroom in a 16.7 ms frame (see CONTRIBUTING). */
@@ -33,7 +32,7 @@ export interface RunLoopOptions {
  */
 export class RunLoop {
   private solver: WorkerSolver | null = null;
-  private scale: ScaleId | null = null;
+  private scale: SolverId | null = null;
   private params: Params = {};
   private running = false;
   private budgetMs: number;
@@ -51,7 +50,7 @@ export class RunLoop {
 
   constructor(
     private readonly host: LoopHost,
-    private readonly factories: Record<ScaleId, SolverFactory>,
+    private readonly factories: Record<SolverId, SolverFactory>,
     opts: RunLoopOptions = {},
   ) {
     this.budgetMs = opts.budgetMs ?? DEFAULT_BUDGET_MS;
