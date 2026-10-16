@@ -10,6 +10,7 @@
 //! matching facets on Γ. The interface space Q_h is P1 on the membrane facets; with a lumped
 //! interface mass matrix its DOFs are the membrane vertices, stored in [`Mesh::membrane`].
 
+use std::collections::HashMap;
 use std::fmt;
 
 /// An axis-aligned box `[lo, hi]` in µm.
@@ -98,6 +99,12 @@ pub enum MeshError {
     EmptyCell(usize),
     /// Two cells share a vertex or overlap; KNP-EMI needs extracellular space between cells.
     CellsTouch(usize, usize),
+    /// A tet has a vertex index out of range, a tag above the cell count, or no volume.
+    BadTet(usize),
+    /// The number of tet tags differs from the number of tets.
+    TagCount,
+    /// A face of this tet on a membrane is shared by more than two tets.
+    NonConforming(usize),
 }
 
 impl fmt::Display for MeshError {
@@ -107,6 +114,9 @@ impl fmt::Display for MeshError {
             Self::CellOutsideDomain(c) => write!(f, "cell {c} is empty or outside the domain"),
             Self::EmptyCell(c) => write!(f, "cell {c} has no hexes"),
             Self::CellsTouch(a, b) => write!(f, "cells {a} and {b} touch"),
+            Self::BadTet(t) => write!(f, "tet {t} is invalid or flat"),
+            Self::TagCount => write!(f, "need one tag per tet"),
+            Self::NonConforming(t) => write!(f, "a membrane face of tet {t} has over two tets"),
         }
     }
 }
@@ -129,33 +139,52 @@ pub struct MembraneNode {
     pub cell: u16,
 }
 
-/// A tetrahedral mesh with per-subdomain P1 DOFs.
+/// The rectilinear grid a [`Mesh`] was built on by [`Mesh::build`].
 #[derive(Debug, Clone)]
-pub struct Mesh {
-    /// Grid plane coordinates along each axis, µm. Vertex `(i, j, k)` has index
+pub struct Grid {
+    /// Plane coordinates along each axis, µm. Vertex `(i, j, k)` has index
     /// `i + nx (j + ny k)` with `n = axes[a].len()` (x fastest).
     pub axes: [Vec<f64>; 3],
     /// Subdomain tag of each hex (0 = extracellular), x fastest.
     pub hex_tag: Vec<u16>,
+}
+
+impl Grid {
+    /// Vertex counts `[nx, ny, nz]`.
+    pub fn vertex_dims(&self) -> [usize; 3] {
+        [0, 1, 2].map(|a| self.axes[a].len())
+    }
+}
+
+/// A tetrahedral mesh with per-subdomain P1 DOFs.
+#[derive(Debug, Clone)]
+pub struct Mesh {
+    /// Vertex coordinates, µm.
+    pub points: Vec<[f64; 3]>,
+    /// The grid, for meshes built from a [`MeshSpec`]; its vertices are `points`.
+    pub grid: Option<Grid>,
     /// Number of cells.
     pub n_cells: usize,
     /// Tetrahedra as DOF indices; all four DOFs belong to the tet's subdomain.
     pub tets: Vec<[u32; 4]>,
     /// Subdomain tag of each tet.
     pub tet_tag: Vec<u16>,
-    /// Grid vertex of each DOF.
+    /// Vertex of each DOF.
     pub dof_vertex: Vec<u32>,
     /// Subdomain tag of each DOF.
     pub dof_tag: Vec<u16>,
-    /// Extracellular DOF of each grid vertex, or [`NONE`]. Cells may touch the domain
+    /// Extracellular DOF of each vertex, or [`NONE`]. Cells may touch the domain
     /// boundary, so outer boundary conditions must go through this map, not vertex position.
     pub vertex_outer: Vec<u32>,
-    /// Intracellular DOF of each grid vertex, or [`NONE`].
+    /// Intracellular DOF of each vertex, or [`NONE`].
     pub vertex_inner: Vec<u32>,
     /// Lumped volume (row sum of the P1 mass matrix) of each DOF, µm³.
     pub lumped_volume: Vec<f64>,
     /// Membrane vertices.
     pub membrane: Vec<MembraneNode>,
+    /// Membrane triangles as indices into `membrane`, counter-clockwise seen from outside
+    /// the cell.
+    pub membrane_facets: Vec<[u32; 3]>,
 }
 
 /// Grid planes along one axis: domain ends and cell faces, refined to spacing ≤ `max_h`.
@@ -202,8 +231,24 @@ pub const KUHN_TETS: [[usize; 4]; 6] = {
     tets
 };
 
+fn sub(a: [f64; 3], b: [f64; 3]) -> [f64; 3] {
+    [a[0] - b[0], a[1] - b[1], a[2] - b[2]]
+}
+
+fn cross(a: [f64; 3], b: [f64; 3]) -> [f64; 3] {
+    [
+        a[1] * b[2] - a[2] * b[1],
+        a[2] * b[0] - a[0] * b[2],
+        a[0] * b[1] - a[1] * b[0],
+    ]
+}
+
+fn dot(a: [f64; 3], b: [f64; 3]) -> f64 {
+    a[0] * b[0] + a[1] * b[1] + a[2] * b[2]
+}
+
 impl Mesh {
-    /// Meshes `spec`. Panics with `u16::MAX` or more cells.
+    /// Meshes `spec` on a rectilinear grid. Panics with `u16::MAX` or more cells.
     pub fn build(spec: &MeshSpec) -> Result<Self, MeshError> {
         assert!(spec.cells.len() < u16::MAX as usize, "too many cells");
         let positive = |x: f64| x.is_finite() && x > 0.0;
@@ -221,7 +266,7 @@ impl Mesh {
             [0, 1, 2].map(|a| axis_planes(spec.extent[a], &spec.cells, a, spec.max_h[a]));
         let nv = [0, 1, 2].map(|a| axes[a].len());
         let nh = nv.map(|n| n - 1);
-        let vid = |i: usize, j: usize, k: usize| i + nv[0] * (j + nv[1] * k);
+        let vid = |i: usize, j: usize, k: usize| (i + nv[0] * (j + nv[1] * k)) as u32;
 
         // Tag hexes by the cell containing their centre.
         let mut hex_tag = vec![0u16; nh[0] * nh[1] * nh[2]];
@@ -245,128 +290,192 @@ impl Mesh {
             return Err(MeshError::EmptyCell(c - 1));
         }
 
-        // One DOF per (vertex, adjacent subdomain).
-        let n_vertices = nv[0] * nv[1] * nv[2];
-        let mut vertex_outer = vec![NONE; n_vertices];
-        let mut vertex_inner = vec![NONE; n_vertices];
-        let mut vertex_cell = vec![0u16; n_vertices];
-        let mut dof_vertex = Vec::new();
-        let mut dof_tag = Vec::new();
+        let mut points = Vec::with_capacity(nv[0] * nv[1] * nv[2]);
         for k in 0..nv[2] {
             for j in 0..nv[1] {
                 for i in 0..nv[0] {
-                    let v = vid(i, j, k);
-                    for (di, dj, dk) in corner_offsets() {
-                        let (Some(hi), Some(hj), Some(hk)) =
-                            (i.checked_sub(di), j.checked_sub(dj), k.checked_sub(dk))
-                        else {
-                            continue;
-                        };
-                        if hi >= nh[0] || hj >= nh[1] || hk >= nh[2] {
-                            continue;
-                        }
-                        let tag = hex_tag[hi + nh[0] * (hj + nh[1] * hk)];
-                        let slot = if tag == 0 {
-                            &mut vertex_outer[v]
-                        } else {
-                            let prev = vertex_cell[v];
-                            if prev != 0 && prev != tag {
-                                let (a, b) = (prev.min(tag), prev.max(tag));
-                                return Err(MeshError::CellsTouch(a as usize - 1, b as usize - 1));
-                            }
-                            vertex_cell[v] = tag;
-                            &mut vertex_inner[v]
-                        };
-                        if *slot == NONE {
-                            *slot = dof_vertex.len() as u32;
-                            dof_vertex.push(v as u32);
-                            dof_tag.push(tag);
-                        }
-                    }
+                    points.push([axes[0][i], axes[1][j], axes[2][k]]);
                 }
             }
         }
-
-        // Kuhn tetrahedra and lumped volumes.
-        let n_dofs = dof_vertex.len();
         let mut tets = Vec::with_capacity(6 * hex_tag.len());
         let mut tet_tag = Vec::with_capacity(6 * hex_tag.len());
-        let mut lumped_volume = vec![0.0; n_dofs];
         for k in 0..nh[2] {
             for j in 0..nh[1] {
                 for i in 0..nh[0] {
-                    let tag = hex_tag[i + nh[0] * (j + nh[1] * k)];
-                    let map = if tag == 0 {
-                        &vertex_outer
-                    } else {
-                        &vertex_inner
-                    };
-                    let corner = |c: usize| map[vid(i + (c & 1), j + (c >> 1 & 1), k + (c >> 2))];
-                    let vol = (axes[0][i + 1] - axes[0][i])
-                        * (axes[1][j + 1] - axes[1][j])
-                        * (axes[2][k + 1] - axes[2][k])
-                        / 6.0;
+                    let corner = |c: usize| vid(i + (c & 1), j + (c >> 1 & 1), k + (c >> 2));
                     for t in KUHN_TETS {
-                        let tet = t.map(corner);
-                        for &d in &tet {
-                            lumped_volume[d as usize] += 0.25 * vol;
-                        }
-                        tets.push(tet);
-                        tet_tag.push(tag);
+                        tets.push(t.map(corner));
+                        tet_tag.push(hex_tag[i + nh[0] * (j + nh[1] * k)]);
                     }
                 }
+            }
+        }
+        let mut mesh = Self::from_tets(points, &tets, tet_tag, spec.cells.len())?;
+        mesh.grid = Some(Grid { axes, hex_tag });
+        Ok(mesh)
+    }
+
+    /// Builds the per-subdomain DOFs and the membrane of a conforming tetrahedral mesh.
+    /// `tets` index into `points` (µm); `tet_tag` is 0 for the extracellular space and
+    /// `1..=n_cells` for the cells. Membrane facets are the triangles shared by a cell tet
+    /// and an extracellular tet; cell faces on the outside of the mesh are sealed. The mesh
+    /// must be conforming; a hanging node on a membrane silently seals that part of it.
+    pub fn from_tets(
+        points: Vec<[f64; 3]>,
+        tets: &[[u32; 4]],
+        tet_tag: Vec<u16>,
+        n_cells: usize,
+    ) -> Result<Self, MeshError> {
+        assert!(n_cells < u16::MAX as usize, "too many cells");
+        let n_vertices = points.len();
+        if tet_tag.len() != tets.len() {
+            return Err(MeshError::TagCount);
+        }
+        // Reject out-of-range indices, bad tags and flat tets.
+        let mut has_tet = vec![false; n_cells + 1];
+        for (t, (tet, &tag)) in tets.iter().zip(&tet_tag).enumerate() {
+            if tag as usize > n_cells || tet.iter().any(|&v| v as usize >= n_vertices) {
+                return Err(MeshError::BadTet(t));
+            }
+            let p = tet.map(|v| points[v as usize]);
+            let e = [1, 2, 3].map(|i| sub(p[i], p[0]));
+            let vol = dot(e[0], cross(e[1], e[2])).abs();
+            let len2 = e.iter().map(|x| dot(*x, *x)).fold(0.0, f64::max);
+            if vol.is_nan() || vol <= 1e-12 * len2.powf(1.5) {
+                return Err(MeshError::BadTet(t));
+            }
+            has_tet[tag as usize] = true;
+        }
+        if let Some(c) = (1..has_tet.len()).find(|&c| !has_tet[c]) {
+            return Err(MeshError::EmptyCell(c - 1));
+        }
+
+        // One DOF per (vertex, adjacent subdomain), numbered vertex by vertex.
+        let mut uses_outer = vec![false; n_vertices];
+        let mut vertex_cell = vec![0u16; n_vertices];
+        for (tet, &tag) in tets.iter().zip(&tet_tag) {
+            for &v in tet {
+                let v = v as usize;
+                if tag == 0 {
+                    uses_outer[v] = true;
+                    continue;
+                }
+                let prev = vertex_cell[v];
+                if prev != 0 && prev != tag {
+                    let (a, b) = (prev.min(tag), prev.max(tag));
+                    return Err(MeshError::CellsTouch(a as usize - 1, b as usize - 1));
+                }
+                vertex_cell[v] = tag;
+            }
+        }
+        let mut vertex_outer = vec![NONE; n_vertices];
+        let mut vertex_inner = vec![NONE; n_vertices];
+        let mut dof_vertex = Vec::new();
+        let mut dof_tag = Vec::new();
+        for v in 0..n_vertices {
+            if uses_outer[v] {
+                vertex_outer[v] = dof_vertex.len() as u32;
+                dof_vertex.push(v as u32);
+                dof_tag.push(0);
+            }
+            if vertex_cell[v] != 0 {
+                vertex_inner[v] = dof_vertex.len() as u32;
+                dof_vertex.push(v as u32);
+                dof_tag.push(vertex_cell[v]);
             }
         }
 
-        // Membrane facets: hex faces between a cell and the ECS. The Kuhn split cuts every
-        // face along the diagonal from its lowest to its highest corner, so the lumped P1
-        // interface mass gives those two corners area/3 and the other two area/6.
-        let mut vertex_area = vec![0.0; n_vertices];
-        for axis in 0..3 {
-            let (u, w) = ((axis + 1) % 3, (axis + 2) % 3);
-            for k in 0..nh[2] {
-                for j in 0..nh[1] {
-                    for i in 0..nh[0] {
-                        let mut idx = [i, j, k];
-                        idx[axis] += 1;
-                        if idx[axis] >= nh[axis] {
-                            continue;
-                        }
-                        let a = hex_tag[i + nh[0] * (j + nh[1] * k)];
-                        let b = hex_tag[idx[0] + nh[0] * (idx[1] + nh[1] * idx[2])];
-                        if (a == 0) == (b == 0) {
-                            continue;
-                        }
-                        let mut lo = [i, j, k];
-                        lo[axis] += 1;
-                        let area = (axes[u][lo[u] + 1] - axes[u][lo[u]])
-                            * (axes[w][lo[w] + 1] - axes[w][lo[w]]);
-                        for (du, dw, share) in [(0, 0, 3.0), (1, 1, 3.0), (1, 0, 6.0), (0, 1, 6.0)]
-                        {
-                            let mut p = lo;
-                            p[u] += du;
-                            p[w] += dw;
-                            vertex_area[vid(p[0], p[1], p[2])] += area / share;
+        // Tets on DOFs, and lumped volumes.
+        let mut lumped_volume = vec![0.0; dof_vertex.len()];
+        let mut dof_tets = Vec::with_capacity(tets.len());
+        for (tet, &tag) in tets.iter().zip(&tet_tag) {
+            let map = if tag == 0 {
+                &vertex_outer
+            } else {
+                &vertex_inner
+            };
+            let p = tet.map(|v| points[v as usize]);
+            let e = [1, 2, 3].map(|i| sub(p[i], p[0]));
+            let vol = dot(e[0], cross(e[1], e[2])).abs() / 6.0;
+            let dofs = tet.map(|v| map[v as usize]);
+            for &d in &dofs {
+                lumped_volume[d as usize] += 0.25 * vol;
+            }
+            dof_tets.push(dofs);
+        }
+
+        // Membrane facets: triangles shared by a cell tet and an extracellular tet. The
+        // lumped P1 interface mass gives each corner a third of the area. Only faces whose
+        // corners all carry both DOFs can be on a membrane, which skips almost every face.
+        let dual = |v: u32| uses_outer[v as usize] && vertex_cell[v as usize] != 0;
+        let mut faces: HashMap<[u32; 3], (usize, usize, bool)> = HashMap::new();
+        let mut facets = Vec::new();
+        for (t, tet) in tets.iter().enumerate() {
+            for skip in 0..4 {
+                let mut f = [0, 1, 2].map(|i| tet[i + usize::from(i >= skip)]);
+                if !f.iter().all(|&v| dual(v)) {
+                    continue;
+                }
+                f.sort_unstable();
+                match faces.get_mut(&f) {
+                    None => {
+                        faces.insert(f, (t, skip, false));
+                    }
+                    Some((_, _, true)) => return Err(MeshError::NonConforming(t)),
+                    Some((u, uskip, paired)) => {
+                        *paired = true;
+                        if (tet_tag[t] == 0) != (tet_tag[*u] == 0) {
+                            let (cell_tet, cell_skip) = if tet_tag[t] == 0 {
+                                (*u, *uskip)
+                            } else {
+                                (t, skip)
+                            };
+                            facets.push((f, tets[cell_tet][cell_skip]));
                         }
                     }
                 }
             }
         }
-        let membrane = (0..n_vertices)
-            .filter(|&v| vertex_area[v] > 0.0)
-            .map(|v| MembraneNode {
-                inner: vertex_inner[v],
-                outer: vertex_outer[v],
-                area: vertex_area[v],
-                cell: vertex_cell[v],
-            })
+        let mut vertex_area = vec![0.0; n_vertices];
+        let mut oriented = Vec::with_capacity(facets.len());
+        for (mut f, apex) in facets {
+            let p = f.map(|v| points[v as usize]);
+            let mut n = cross(sub(p[1], p[0]), sub(p[2], p[0]));
+            // Counter-clockwise seen from outside: the normal points away from the cell.
+            if dot(n, sub(points[apex as usize], p[0])) > 0.0 {
+                f.swap(1, 2);
+                n = n.map(|x| -x);
+            }
+            let area = 0.5 * dot(n, n).sqrt();
+            for &v in &f {
+                vertex_area[v as usize] += area / 3.0;
+            }
+            oriented.push(f);
+        }
+        let mut node_of_vertex = vec![NONE; n_vertices];
+        let mut membrane = Vec::new();
+        for v in 0..n_vertices {
+            if vertex_area[v] > 0.0 {
+                node_of_vertex[v] = membrane.len() as u32;
+                membrane.push(MembraneNode {
+                    inner: vertex_inner[v],
+                    outer: vertex_outer[v],
+                    area: vertex_area[v],
+                    cell: vertex_cell[v],
+                });
+            }
+        }
+        let membrane_facets = oriented
+            .into_iter()
+            .map(|f| f.map(|v| node_of_vertex[v as usize]))
             .collect();
 
         Ok(Self {
-            axes,
-            hex_tag,
-            n_cells: spec.cells.len(),
-            tets,
+            points,
+            grid: None,
+            n_cells,
+            tets: dof_tets,
             tet_tag,
             dof_vertex,
             dof_tag,
@@ -374,6 +483,7 @@ impl Mesh {
             vertex_inner,
             lumped_volume,
             membrane,
+            membrane_facets,
         })
     }
 
@@ -382,30 +492,33 @@ impl Mesh {
         self.dof_vertex.len()
     }
 
-    /// Grid vertex counts `[nx, ny, nz]`.
-    pub fn vertex_dims(&self) -> [usize; 3] {
-        [0, 1, 2].map(|a| self.axes[a].len())
+    /// Coordinates of vertex `v`, µm.
+    pub fn vertex_position(&self, v: usize) -> [f64; 3] {
+        self.points[v]
     }
 
-    /// Coordinates of grid vertex `v`, µm.
-    pub fn vertex_position(&self, v: usize) -> [f64; 3] {
-        let [nx, ny, _] = self.vertex_dims();
-        [
-            self.axes[0][v % nx],
-            self.axes[1][(v / nx) % ny],
-            self.axes[2][v / (nx * ny)],
-        ]
+    /// Coordinates of the DOF `d`'s vertex, µm.
+    pub fn dof_position(&self, d: usize) -> [f64; 3] {
+        self.points[self.dof_vertex[d] as usize]
     }
 
     /// Coordinates of the four vertices of tet `t`, µm.
     pub fn tet_points(&self, t: usize) -> [[f64; 3]; 4] {
-        self.tets[t].map(|d| self.vertex_position(self.dof_vertex[d as usize] as usize))
+        self.tets[t].map(|d| self.dof_position(d as usize))
     }
-}
 
-/// Offsets from a vertex to the low corners of its (up to) eight adjacent hexes.
-fn corner_offsets() -> impl Iterator<Item = (usize, usize, usize)> {
-    (0..8).map(|c| (c & 1, c >> 1 & 1, c >> 2))
+    /// Lower and upper corners of the bounding box of all vertices, µm.
+    pub fn bounds(&self) -> ([f64; 3], [f64; 3]) {
+        let mut lo = [f64::INFINITY; 3];
+        let mut hi = [f64::NEG_INFINITY; 3];
+        for p in &self.points {
+            for a in 0..3 {
+                lo[a] = lo[a].min(p[a]);
+                hi[a] = hi[a].max(p[a]);
+            }
+        }
+        (lo, hi)
+    }
 }
 
 #[cfg(test)]
@@ -471,11 +584,15 @@ mod tests {
         let mesh = Mesh::build(&MeshSpec::paper_bundle()).unwrap();
         for y in [0.3, 0.5, 0.6, 0.8, 0.9, 1.1] {
             assert!(
-                mesh.axes[1].iter().any(|&p| (p - y).abs() < 1e-12),
+                mesh.grid.as_ref().unwrap().axes[1]
+                    .iter()
+                    .any(|&p| (p - y).abs() < 1e-12),
                 "y = {y}"
             );
         }
-        assert!(mesh.axes[1].windows(2).all(|w| w[1] - w[0] <= 0.1 + 1e-12));
+        assert!(mesh.grid.as_ref().unwrap().axes[1]
+            .windows(2)
+            .all(|w| w[1] - w[0] <= 0.1 + 1e-12));
         assert_eq!(mesh.n_cells, 9);
     }
 
