@@ -31,7 +31,7 @@ jobs:
       - run: cargo test --workspace --release
 
   web:
-    name: Web (wasm build, typecheck, test, build, e2e)
+    name: Web (wasm build, typecheck, test, build)
     runs-on: ubuntu-latest
     defaults:
       run:
