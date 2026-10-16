@@ -12,12 +12,14 @@
     "test": "vitest run"
   },
   "devDependencies": {
+    "@types/three": "^0.180.0",
     "happy-dom": "^18.0.1",
     "typescript": "^5.9.3",
     "vite": "^6.4.4",
     "vitest": "^3.2.7"
   },
   "dependencies": {
-    "temml": "^0.14.0"
+    "temml": "^0.14.0",
+    "three": "^0.180.0"
   }
 }
