@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { LUT_SIZE, coolwarm, lightnessAt, sampleColormap, viridis } from './colormap';
+import { LUT_SIZE, coolwarm, icefire, inferno, lightnessAt, sampleColormap, viridis } from './colormap';
 
 const rgb = (lut: Uint8Array, i: number) => [lut[4 * i], lut[4 * i + 1], lut[4 * i + 2]];
 
@@ -48,5 +48,22 @@ describe('sampleColormap', () => {
     expect(sampleColormap(viridis, -1)).toEqual(sampleColormap(viridis, 0));
     expect(sampleColormap(viridis, 2)).toEqual(sampleColormap(viridis, 1));
     expect(sampleColormap(viridis, NaN)).toEqual(sampleColormap(viridis, 0));
+  });
+});
+
+describe('inferno', () => {
+  it('matches matplotlib endpoints within 4/255 and brightens monotonically', () => {
+    [0, 0, 4].forEach((c, k) => expect(Math.abs(rgb(inferno.lut, 0)[k] - c)).toBeLessThanOrEqual(4));
+    [252, 255, 164].forEach((c, k) => expect(Math.abs(rgb(inferno.lut, LUT_SIZE - 1)[k] - c)).toBeLessThanOrEqual(4));
+    for (let i = 8; i < LUT_SIZE; i += 8)
+      expect(lightnessAt(inferno.lut, i)).toBeGreaterThan(lightnessAt(inferno.lut, i - 8) + 1);
+  });
+});
+
+describe('icefire', () => {
+  it('is black at the centre and brightens towards both ends', () => {
+    expect(rgb(icefire.lut, 128).every((c) => c < 8)).toBe(true);
+    for (let i = 136; i < LUT_SIZE; i += 8) expect(lightnessAt(icefire.lut, i)).toBeGreaterThan(lightnessAt(icefire.lut, i - 8));
+    for (let i = 120; i >= 0; i -= 8) expect(lightnessAt(icefire.lut, i)).toBeGreaterThan(lightnessAt(icefire.lut, i + 8));
   });
 });

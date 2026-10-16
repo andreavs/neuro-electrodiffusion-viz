@@ -5,11 +5,12 @@ import type { Range } from './range';
 
 /**
  * Colormapped scalar values on a mesh surface, one value per vertex, with
- * simple headlight shading. `update()` overwrites the vertex attribute in place.
+ * simple headlight shading, or (`setGlow`) an emissive look with a bright
+ * Fresnel rim for bloom. `update()` overwrites the vertex attribute in place.
  */
 export class SurfaceField implements Colormapped {
   readonly mesh: THREE.Mesh<THREE.BufferGeometry, THREE.ShaderMaterial>;
-  readonly uniforms: ColormapUniforms;
+  readonly uniforms: ColormapUniforms & { uGlow: THREE.IUniform<number> };
   private readonly attr: THREE.BufferAttribute;
 
   /** `geometry` is owned by the SurfaceField afterwards and freed by `dispose()`. */
@@ -19,7 +20,7 @@ export class SurfaceField implements Colormapped {
     this.attr = new THREE.BufferAttribute(new Float32Array(n), 1);
     this.attr.setUsage(THREE.DynamicDrawUsage);
     geometry.setAttribute('value', this.attr);
-    this.uniforms = colormapUniforms(colormap, range);
+    this.uniforms = { ...colormapUniforms(colormap, range), uGlow: { value: 0 } };
     const material = new THREE.ShaderMaterial({
       uniforms: this.uniforms,
       side: THREE.DoubleSide,
@@ -27,21 +28,37 @@ export class SurfaceField implements Colormapped {
         attribute float value;
         varying float vValue;
         varying vec3 vNormal;
+        varying vec3 vView;
         void main() {
           vValue = value;
           vNormal = normalize(normalMatrix * normal);
-          gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+          vec4 mv = modelViewMatrix * vec4(position, 1.0);
+          vView = -mv.xyz;
+          gl_Position = projectionMatrix * mv;
         }`,
       fragmentShader: /* glsl */ `
         ${COLORMAP_GLSL}
         varying float vValue;
         varying vec3 vNormal;
+        varying vec3 vView;
+        uniform float uGlow;
         void main() {
+          vec3 base = colormap(vValue);
+          float facing = abs(dot(normalize(vNormal), normalize(vView)));
           float shade = 0.45 + 0.55 * abs(normalize(vNormal).z);
-          gl_FragColor = vec4(colormap(vValue) * shade, 1.0);
+          // Glow: dimmer faces, a bright rim where the surface turns away, HDR so the rim blooms.
+          float rim = pow(1.0 - facing, 2.5);
+          vec3 glow = base * (0.35 + 0.65 * facing) + base * rim * 2.5 + vec3(0.6) * rim * rim;
+          gl_FragColor = vec4(mix(base * shade, glow, uGlow), 1.0);
+          #include <colorspace_fragment>
         }`,
     });
     this.mesh = new THREE.Mesh(geometry, material);
+  }
+
+  /** Switch between plain shading and the emissive glow look. */
+  setGlow(on: boolean): void {
+    this.uniforms.uGlow.value = on ? 1 : 0;
   }
 
   get vertexCount(): number {
