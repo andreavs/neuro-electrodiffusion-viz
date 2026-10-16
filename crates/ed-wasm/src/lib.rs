@@ -7,6 +7,7 @@ pub mod emi;
 pub mod emi_slice;
 pub mod knp;
 pub mod particles;
+pub mod spreading;
 
 /// Crate version, used by the front end to confirm the WASM module loaded.
 #[wasm_bindgen]

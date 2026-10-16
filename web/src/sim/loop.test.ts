@@ -1,7 +1,6 @@
 import { beforeEach, describe, expect, it } from 'vitest';
-import type { ScaleId } from '../scales/registry';
 import { DEFAULT_BUDGET_MS, MAX_BUDGET_MS, RunLoop, clampBudget, type LoopHost } from './loop';
-import type { FrameMessage, FromWorker } from './protocol';
+import type { FrameMessage, FromWorker, SolverId } from './protocol';
 import type { SolverFactory } from './solver';
 import { FakeSolver } from './testing/fakeSolver';
 
@@ -60,7 +59,7 @@ describe('RunLoop', () => {
       solvers.push(s);
       return s;
     };
-    const factories = { knp: make, emi: make, particles: make } satisfies Record<ScaleId, SolverFactory>;
+    const factories = { knp: make, emi: make, particles: make, 'knp-sd': make } satisfies Record<SolverId, SolverFactory>;
     loop = new RunLoop(host, factories);
   });
 
@@ -207,7 +206,7 @@ describe('RunLoop', () => {
       knp: () => {
         throw new Error('not implemented');
       },
-    } as unknown as Record<ScaleId, SolverFactory>);
+    } as unknown as Record<SolverId, SolverFactory>);
     failing.handle({ type: 'create', scale: 'knp', params: {} });
     expect(host.posted).toEqual([{ type: 'error', message: 'not implemented' }]);
   });
@@ -307,7 +306,7 @@ describe('RunLoop', () => {
         wake = w;
       },
     };
-    const l = new RunLoop(host, { particles: () => solver } as unknown as Record<ScaleId, SolverFactory>);
+    const l = new RunLoop(host, { particles: () => solver } as unknown as Record<SolverId, SolverFactory>);
     l.handle({ type: 'create', scale: 'particles', params: {} });
     l.handle({ type: 'run', running: true });
     l.handle({ type: 'ack', seq: host.lastFrame().seq });
