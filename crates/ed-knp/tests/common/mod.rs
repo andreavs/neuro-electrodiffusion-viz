@@ -22,7 +22,15 @@ pub fn amount(s: &KnpSolver, k: usize) -> f64 {
     s.concentration(k).iter().sum()
 }
 
-/// A KX bump next to a NaX dip (electroneutral).
+/// Σ z c in every cell, for the default species.
+pub fn charge(s: &KnpSolver) -> Vec<f64> {
+    let z = [1.0, 1.0, -1.0, 2.0];
+    (0..s.grid().len())
+        .map(|cell| (0..4).map(|k| z[k] * s.concentration(k)[cell]).sum())
+        .collect()
+}
+
+/// An electroneutral KX bump next to a NaX dip.
 pub fn add_bumps(s: &mut KnpSolver) {
     let g = *s.grid();
     g.for_each_cell(|i, j, k, cell| {
