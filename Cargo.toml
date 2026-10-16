@@ -1,0 +1,26 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/ed-core",
+    "crates/ed-knp",
+    "crates/ed-emi",
+    "crates/ed-particles",
+    "crates/ed-wasm",
+]
+
+[workspace.package]
+edition = "2021"
+license = "MIT"
+repository = "https://github.com/andreavs/neuro-electrodiffusion-viz"
+rust-version = "1.80"
+
+[workspace.dependencies]
+ed-core = { path = "crates/ed-core" }
+ed-knp = { path = "crates/ed-knp" }
+ed-emi = { path = "crates/ed-emi" }
+ed-particles = { path = "crates/ed-particles" }
+
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1

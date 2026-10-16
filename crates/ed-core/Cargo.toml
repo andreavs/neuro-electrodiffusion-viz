@@ -1,0 +1,10 @@
+[package]
+name = "ed-core"
+version = "0.1.0"
+description = "Shared physics, units and numerics for the electrodiffusion simulators"
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[dependencies]

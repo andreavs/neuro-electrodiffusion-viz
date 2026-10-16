@@ -1,0 +1,11 @@
+[package]
+name = "ed-knp"
+version = "0.1.0"
+description = "Tissue-scale KNP electrodiffusion with point-source neurons"
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+ed-core.workspace = true

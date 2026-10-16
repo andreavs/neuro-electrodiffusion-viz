@@ -1,0 +1,11 @@
+[package]
+name = "ed-emi"
+version = "0.1.0"
+description = "Cell-scale KNP-EMI electrodiffusion with explicit membranes"
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+ed-core.workspace = true

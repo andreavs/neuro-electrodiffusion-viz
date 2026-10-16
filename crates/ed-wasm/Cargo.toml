@@ -1,0 +1,21 @@
+[package]
+name = "ed-wasm"
+version = "0.1.0"
+description = "wasm-bindgen bindings exposing the simulators to the browser"
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+ed-core.workspace = true
+ed-knp.workspace = true
+ed-emi.workspace = true
+ed-particles.workspace = true
+wasm-bindgen = "0.2"
+
+[package.metadata.wasm-pack.profile.release]
+wasm-opt = ["-O3"]

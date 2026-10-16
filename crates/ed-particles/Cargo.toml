@@ -1,0 +1,11 @@
+[package]
+name = "ed-particles"
+version = "0.1.0"
+description = "Molecular-scale Brownian electrodiffusion of individual ions"
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+ed-core.workspace = true
