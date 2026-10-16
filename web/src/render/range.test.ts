@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { ExpandingRange, autoRange } from './range';
+import { ExpandingRange, autoRange, restRange } from './range';
 import { niceTicks } from './ticks';
 
 describe('autoRange', () => {
@@ -52,5 +52,19 @@ describe('ExpandingRange', () => {
     expect(r.empty).toBe(true);
     r.include(5, 6);
     expect([r.min, r.max]).toEqual([5, 6]);
+  });
+});
+
+describe('restRange', () => {
+  it('centres on the rest value, ignores masked cells and keeps a minimum width', () => {
+    const field = new Float32Array([3, 3, 3.2, 2.9, 50, 3]);
+    const mask = new Uint8Array([0, 0, 0, 0, 1, 0]);
+    const [lo, hi] = restRange(field, mask, 3, 1, 1, new Float32Array(6));
+    expect(lo).toBeCloseTo(2.8);
+    expect(hi).toBeCloseTo(3.2);
+    expect(restRange(new Float32Array([3, 3]), new Uint8Array(2), 3, 1, 1, new Float32Array(2))).toEqual([
+      3 - 3e-3,
+      3 + 3e-3,
+    ]);
   });
 });

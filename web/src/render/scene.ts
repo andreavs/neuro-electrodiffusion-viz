@@ -31,6 +31,8 @@ export interface SceneHandle {
   readonly controls: OrbitControls;
   /** Whether linear filtering of float textures is supported. */
   readonly floatLinear: boolean;
+  /** CPU-emulated WebGL: keep per-pixel work (ray marching, post-processing) light. */
+  readonly software: boolean;
   /** Point the camera at a box of the given size centred on the origin. */
   frameBox(size: THREE.Vector3Like): void;
   /**
@@ -98,11 +100,12 @@ export function createScene(canvas: HTMLCanvasElement, opts: SceneOptions = {}):
     composerRatio = ratio;
     composer.setSize(Math.max(1, canvas.clientWidth), Math.max(1, canvas.clientHeight));
   };
+  const software = isSoftwareRenderer(renderer);
   // Bloom renders into half-float targets; without float colour buffers it would draw nothing.
   // Software renderers (SwiftShader, llvmpipe) can, but take seconds per bloomed frame.
   const bloomable =
     (renderer.extensions.has('EXT_color_buffer_float') || renderer.extensions.has('EXT_color_buffer_half_float')) &&
-    !isSoftwareRenderer(renderer);
+    !software;
 
   const resize = () => {
     const w = Math.max(1, canvas.clientWidth);
@@ -139,6 +142,7 @@ export function createScene(canvas: HTMLCanvasElement, opts: SceneOptions = {}):
     camera,
     controls,
     floatLinear,
+    software,
     frameBox(size) {
       const r = 0.5 * Math.hypot(size.x, size.y, size.z);
       const dist = r / Math.sin(THREE.MathUtils.degToRad(camera.fov) / 2);

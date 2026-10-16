@@ -86,3 +86,27 @@ export class ExpandingRange implements Range {
     return true;
   }
 }
+
+/**
+ * Colour range centred on `rest`, wide enough for the fraction `q` of the deviations
+ * from `rest` in every `stride`-th value of `field` outside the masked cells (such as point
+ * sources, whose values are far off the rest), and at least ±0.1 % of `rest`.
+ * `scratch` is reused between calls.
+ */
+export function restRange(
+  field: Float32Array,
+  mask: Uint8Array,
+  rest: number,
+  q: number,
+  stride: number,
+  scratch: Float32Array,
+): [number, number] {
+  let n = 0;
+  for (let i = 0; i < field.length && n < scratch.length; i += stride) {
+    const d = Math.abs(field[i]! - rest);
+    if (!mask[i] && Number.isFinite(d)) scratch[n++] = d;
+  }
+  const devs = scratch.subarray(0, n).sort();
+  const d = Math.max(n ? devs[Math.min(n - 1, Math.floor(q * n))]! : 0, Math.abs(rest) * 1e-3, 1e-9);
+  return [rest - d, rest + d];
+}
