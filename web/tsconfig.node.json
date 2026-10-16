@@ -17,7 +17,8 @@
     "noEmit": true,
     "types": [
       "node",
-      "vitest/config"
+      "vitest/config",
+      "vite/client"
     ]
   },
   "include": [

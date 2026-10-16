@@ -140,7 +140,11 @@ export class RunLoop {
       else {
         // Paused: publish what arrived (e.g. a fresh release) without stepping.
         this.dirty = true;
-        this.flush();
+        try {
+          this.flush();
+        } catch (err) {
+          this.fail(err);
+        }
       }
     });
     this.solverMs = 0;

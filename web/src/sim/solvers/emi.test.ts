@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
-import { makeEmiSolver, packFrame, type EmiWasm, type PackState } from './emi';
+import { siteKey, type MeshGeometry } from '../../scales/emi/meshes';
+import { makeEmiSolver, packFrame, type EmiGeometry, type EmiWasm, type PackState } from './emi';
 
 /** Two cells, three membrane nodes, one membrane triangle and two slice triangles; records calls. */
 class FakeSim implements EmiWasm {
@@ -7,10 +8,22 @@ class FakeSim implements EmiWasm {
   calls: string[] = [];
   time = 0;
   freed = false;
-  constructor(readonly perSide: number) {}
+  constructor(readonly geometry: EmiGeometry) {}
+  get perSide() {
+    return this.geometry.kind === 'bundle' ? this.geometry.perSide : 0;
+  }
   stimulate(which: string) {
     this.calls.push(`stimulate ${which}`);
   }
+  stimulate_sphere(cell: number, x: number, y: number, z: number, r: number, g: number) {
+    this.calls.push(`sphere ${cell} ${x},${y},${z} ${r} ${g}`);
+    return 3;
+  }
+  add_probe(x: number, y: number, z: number, r: number) {
+    this.calls.push(`add probe ${x},${y},${z} ${r}`);
+    return 2;
+  }
+  n_probes = () => 2;
   set_dt(dt: number) {
     this.calls.push(`dt ${dt}`);
   }
@@ -40,17 +53,31 @@ class FakeSim implements EmiWasm {
   }
 }
 
-function setup(params = {}) {
+const MESH: MeshGeometry = {
+  bytes: new Uint8Array(4),
+  meta: {
+    label: 'Cell',
+    description: '',
+    stimuli: [
+      { key: 'soma', label: 'Soma', cell: 1, centre: [0, 0, 0], radius: 5, g: 2 },
+      { key: 'tip', label: 'Tip', cell: 1, centre: [0, 0, 9], radius: 1, g: 4 },
+    ],
+    probes: [{ label: 'Soma', centre: [1, 2, 3], radius: 4 }],
+  },
+};
+
+function setup(params = {}, load = (_name: string) => Promise.resolve(MESH)) {
   const sims: FakeSim[] = [];
   FakeSim.clock.t = 0;
   const solver = makeEmiSolver(
     params,
-    (perSide) => {
-      const s = new FakeSim(perSide);
+    (geometry) => {
+      const s = new FakeSim(geometry);
       sims.push(s);
       return s;
     },
     () => FakeSim.clock.t,
+    load,
   );
   return { solver, sims };
 }
@@ -59,7 +86,7 @@ const names = (f: { fields: { name: string }[] }) => f.fields.map((x) => x.name)
 
 describe('packFrame', () => {
   it('sends the mesh and slice triangles once, then only the changing fields', () => {
-    const sim = new FakeSim(3);
+    const sim = new FakeSim({ kind: 'bundle', perSide: 3, gap: 0.1 });
     const state: PackState = { geometry: 1, slice: 1, geometrySent: false, sliceSent: false };
     const params = { slice: 'across', slicePos: 0.25, field: 'k' };
     const first = packFrame(sim, params, state, 7);
@@ -73,7 +100,7 @@ describe('packFrame', () => {
     expect(f.slice!.data[0]).toBeCloseTo(4.25);
     expect(f.traces!.shape).toEqual([2, 3]);
     expect(first.steps).toBe(7);
-    expect(first.stats).toMatchObject({ geometry: 1, slice: 1, nCells: 2, probeX: 150, stimulated: 2, loX: 0, hiX: 210 });
+    expect(first.stats).toMatchObject({ geometry: 1, slice: 1, nCells: 2, nProbes: 2, probeX: 150, stimulated: 2, loX: 0, hiX: 210 });
 
     expect(names(packFrame(sim, params, state, 8))).toEqual(['phiM', 'slice', 'traces']);
   });
@@ -145,9 +172,9 @@ describe('makeEmiSolver', () => {
   it('keeps the old simulation when a rebuild fails', () => {
     let fail = false;
     const sims: FakeSim[] = [];
-    const solver = makeEmiSolver({}, (n) => {
+    const solver = makeEmiSolver({}, (g) => {
       if (fail) throw new Error('bad geometry');
-      const s = new FakeSim(n);
+      const s = new FakeSim(g);
       sims.push(s);
       return s;
     });
@@ -156,5 +183,90 @@ describe('makeEmiSolver', () => {
     expect(sims[0]!.freed).toBe(false);
     solver.dispose();
     expect(sims[0]!.freed).toBe(true);
+  });
+
+  it('loads a mesh geometry, then adds its probes and stimulates the chosen site', async () => {
+    const loads: string[] = [];
+    const { solver, sims } = setup({ geometry: 'cell', [siteKey('cell')]: 'tip' }, (name) => {
+      loads.push(name);
+      return Promise.resolve(MESH);
+    });
+    let woken = 0;
+    solver.setWake!(() => woken++);
+    expect(sims).toHaveLength(0);
+    expect(solver.advance(12)).toBe('wait');
+    expect(solver.frame().fields).toEqual([]);
+    await Promise.resolve();
+    expect(woken).toBe(1);
+    expect(solver.advance(12)).toBe(true);
+    expect(sims).toHaveLength(1);
+    expect(sims[0]!.geometry.kind).toBe('mesh');
+    expect(sims[0]!.calls).toEqual(['add probe 1,2,3 4', 'sphere 1 0,0,9 1 4']);
+    expect(names(solver.frame())).toContain('tris');
+    // Back to the bundle and to the mesh again: the mesh is not fetched twice.
+    solver.setParams({ geometry: 'bundle' });
+    solver.setParams({ geometry: 'cell', [siteKey('cell')]: 'nope' });
+    expect(loads).toEqual(['cell']);
+    expect(sims).toHaveLength(3);
+    expect(sims[1]!.freed).toBe(true);
+    expect(sims[2]!.calls.at(-1)).toBe('sphere 1 0,0,0 5 2'); // unknown site → the first
+  });
+
+  it('reports a failed mesh load on the next tick, unless the geometry moved on', async () => {
+    const { solver } = setup({ geometry: 'cell' }, () => Promise.reject(new Error('404')));
+    solver.setWake!(() => {});
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(() => solver.advance(12)).toThrow('404');
+
+    const other = setup({ geometry: 'cell' }, () => Promise.reject(new Error('404'))).solver;
+    other.setParams({ geometry: 'bundle' });
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(other.advance(12)).toBe(true);
+  });
+
+  it('builds a mesh as soon as it arrives, so a paused view gets it from frame()', async () => {
+    const { solver, sims } = setup({ geometry: 'cell' });
+    let woken = 0;
+    solver.setWake!(() => woken++);
+    await Promise.resolve();
+    expect(woken).toBe(1);
+    expect(sims).toHaveLength(1);
+    expect(names(solver.frame())).toContain('tris');
+  });
+
+  it('reports a failed load from frame() too, and ignores loads that no longer matter', async () => {
+    const failed = setup({ geometry: 'cell' }, () => Promise.reject(new Error('404'))).solver;
+    failed.setWake!(() => {});
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(() => failed.frame()).toThrow('404');
+    expect(failed.frame().stats).toEqual({ loading: 1 }); // reported once
+
+    // A slow mesh A, then B: A arriving last must not replace B.
+    const later: Record<string, (m: MeshGeometry) => void> = {};
+    const { solver, sims } = setup({ geometry: 'a' }, (name) => new Promise((done) => (later[name] = done)));
+    solver.setWake!(() => {});
+    solver.setParams({ geometry: 'b' });
+    later.b!(MESH);
+    await Promise.resolve();
+    later.a!(MESH);
+    await Promise.resolve();
+    expect(sims).toHaveLength(1);
+    // Disposed while loading: a late arrival builds nothing.
+    const gone = setup({ geometry: 'c' }, (name) => new Promise((done) => (later[name] = done)));
+    gone.solver.dispose();
+    later.c!(MESH);
+    await Promise.resolve();
+    expect(gone.sims).toHaveLength(0);
+  });
+
+  it('ignores bundle-only keys on a mesh geometry', async () => {
+    const { solver, sims } = setup({ geometry: 'cell' });
+    solver.setWake!(() => {});
+    await Promise.resolve();
+    solver.setParams({ axons: '4', gap: 0.3 });
+    expect(sims).toHaveLength(1);
   });
 });
