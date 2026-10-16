@@ -9,6 +9,9 @@
 //! | 3 f32 per point | coordinates, µm |
 //! | 4 u16 or u32 per tet | vertex indices |
 //! | u16 per tet | subdomain tag (0 = extracellular, `1..=cells` = cell) |
+//!
+//! The file length must match the header exactly. Coordinates are f32, so a round trip
+//! through a file rounds f64 points to f32.
 
 use std::fmt;
 
@@ -23,6 +26,8 @@ const SHORT_INDICES: u32 = 1;
 pub enum MeshFileError {
     /// Wrong magic bytes or unknown flags.
     NotAMeshFile,
+    /// More cells than a u16 tag can name.
+    TooManyCells(usize),
     /// The file is shorter or longer than its header says.
     WrongLength { expected: usize, actual: usize },
     /// A coordinate is not finite.
@@ -35,6 +40,7 @@ impl fmt::Display for MeshFileError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::NotAMeshFile => write!(f, "not an EDMESH01 mesh file"),
+            Self::TooManyCells(n) => write!(f, "mesh file has {n} cells, at most 65534 allowed"),
             Self::WrongLength { expected, actual } => {
                 write!(f, "mesh file has {actual} bytes, expected {expected}")
             }
@@ -44,7 +50,14 @@ impl fmt::Display for MeshFileError {
     }
 }
 
-impl std::error::Error for MeshFileError {}
+impl std::error::Error for MeshFileError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::Mesh(e) => Some(e),
+            _ => None,
+        }
+    }
+}
 
 /// The raw contents of a mesh file.
 #[derive(Debug, Clone, PartialEq)]
@@ -68,8 +81,11 @@ impl MeshData {
             word(2) as usize,
             word(3),
         );
-        if flags & !SHORT_INDICES != 0 || n_cells >= u16::MAX as usize {
+        if flags & !SHORT_INDICES != 0 {
             return Err(MeshFileError::NotAMeshFile);
+        }
+        if n_cells >= u16::MAX as usize {
+            return Err(MeshFileError::TooManyCells(n_cells));
         }
         let index_size = if flags & SHORT_INDICES != 0 { 2 } else { 4 };
         let expected = n_points
@@ -124,28 +140,40 @@ impl MeshData {
         })
     }
 
-    /// Writes the file, with 16-bit indices when the points allow.
+    /// Writes the file, with 16-bit indices when every index fits.
+    ///
+    /// Panics if the data cannot be written as a file `parse` accepts (counts beyond u32,
+    /// a tag per tet missing, too many cells, or a point beyond f32).
     pub fn to_bytes(&self) -> Vec<u8> {
-        let short = self.points.len() <= u16::MAX as usize + 1;
+        let count = |n: usize| u32::try_from(n).expect("count fits in u32");
+        assert_eq!(self.tet_tag.len(), self.tets.len(), "one tag per tet");
+        assert!(self.n_cells < u16::MAX as usize, "too many cells");
+        let short = self
+            .tets
+            .iter()
+            .flatten()
+            .all(|&i| i <= u32::from(u16::MAX));
         let mut out = Vec::new();
         out.extend_from_slice(MAGIC);
         for w in [
-            self.points.len() as u32,
-            self.tets.len() as u32,
-            self.n_cells as u32,
+            count(self.points.len()),
+            count(self.tets.len()),
+            count(self.n_cells),
             if short { SHORT_INDICES } else { 0 },
         ] {
             out.extend_from_slice(&w.to_le_bytes());
         }
         for p in &self.points {
             for &x in p {
-                out.extend_from_slice(&(x as f32).to_le_bytes());
+                let x = x as f32;
+                assert!(x.is_finite(), "point {p:?} is not a finite f32");
+                out.extend_from_slice(&x.to_le_bytes());
             }
         }
         for t in &self.tets {
             for &i in t {
                 if short {
-                    out.extend_from_slice(&(i as u16).to_le_bytes());
+                    out.extend_from_slice(&(i as u16).to_le_bytes()); // checked above
                 } else {
                     out.extend_from_slice(&i.to_le_bytes());
                 }
@@ -201,7 +229,7 @@ mod tests {
 
         // Hand-written 32-bit variant.
         let mut long = bytes[..HEADER].to_vec();
-        long[20] = 0;
+        long[20..24].copy_from_slice(&0u32.to_le_bytes()); // flags
         long.extend_from_slice(&bytes[HEADER..HEADER + 60]);
         for t in &data.tets {
             t.iter()
@@ -237,6 +265,37 @@ mod tests {
             MeshData::parse(&b).unwrap_err(),
             MeshFileError::WrongLength { .. }
         ));
+        // Unknown flags, a trailing byte, too many cells.
+        let mut b = bytes.clone();
+        b[20..24].copy_from_slice(&3u32.to_le_bytes());
+        assert_eq!(
+            MeshData::parse(&b).unwrap_err(),
+            MeshFileError::NotAMeshFile
+        );
+        let mut b = bytes.clone();
+        b.push(0);
+        assert!(matches!(
+            MeshData::parse(&b).unwrap_err(),
+            MeshFileError::WrongLength { .. }
+        ));
+        let mut b = bytes.clone();
+        b[16..20].copy_from_slice(&u32::from(u16::MAX).to_le_bytes());
+        assert_eq!(
+            read(&b).unwrap_err(),
+            MeshFileError::TooManyCells(u16::MAX as usize)
+        );
+        // Tag 2 names no cell.
+        let mut b = bytes.clone();
+        let n = b.len();
+        b[n - 2..].copy_from_slice(&2u16.to_le_bytes());
+        assert_eq!(
+            read(&b).unwrap_err(),
+            MeshFileError::Mesh(MeshError::BadTet(1))
+        );
+        // Every truncation is an error, never a panic.
+        for len in 0..bytes.len() {
+            assert!(read(&bytes[..len]).is_err());
+        }
         // Index 9 does not exist.
         let mut b = bytes;
         b[HEADER + 60..HEADER + 62].copy_from_slice(&9u16.to_le_bytes());
