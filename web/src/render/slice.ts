@@ -56,6 +56,8 @@ export class SlicePlane implements Colormapped {
       uniforms: this.uniforms,
       side: THREE.DoubleSide,
       transparent: (opts.opacity ?? 1) < 1,
+      // Let crossing translucent slices show through each other.
+      depthWrite: (opts.opacity ?? 1) >= 1,
       vertexShader: /* glsl */ `
         varying vec2 vUv;
         void main() {

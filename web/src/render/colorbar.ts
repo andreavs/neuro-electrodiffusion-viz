@@ -145,7 +145,9 @@ export class Colorbar {
   private redraw(): void {
     const { min, max } = this.range;
     const ticks = niceTicks(min, max, 5);
-    const key = ticks.map(formatTick).join('|');
+    // Tick positions depend on min/max too; quantise so tiny drifts don't redraw.
+    const q = (max - min) * 1e-3 || 1;
+    const key = `${Math.round(min / q)}|${Math.round(max / q)}|${ticks.map(formatTick).join('|')}`;
     if (key === this.shown) return;
     this.shown = key;
     this.ticks.replaceChildren(

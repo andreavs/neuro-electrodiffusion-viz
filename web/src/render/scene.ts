@@ -48,22 +48,13 @@ export function createScene(canvas: HTMLCanvasElement, opts: SceneOptions = {}):
   const scene = new THREE.Scene();
   const camera = new THREE.PerspectiveCamera(opts.fov ?? 40, 1, 0.01, 1000);
   camera.position.set(0, 0, 5);
+  // Z-up is the toolkit convention. Set it before creating the controls:
+  // OrbitControls caches its orbit frame from camera.up at construction.
+  camera.up.set(0, 0, 1);
   const controls = new OrbitControls(camera, canvas);
   controls.enableDamping = true;
 
   const floatLinear = renderer.extensions.has('OES_texture_float_linear');
-
-  const resize = () => {
-    const w = Math.max(1, canvas.clientWidth);
-    const h = Math.max(1, canvas.clientHeight);
-    renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, maxPixelRatio));
-    renderer.setSize(w, h, false);
-    camera.aspect = w / h;
-    camera.updateProjectionMatrix();
-  };
-  resize();
-  const observer = new ResizeObserver(resize);
-  observer.observe(canvas);
 
   let raf = 0;
   let last = 0;
@@ -73,6 +64,34 @@ export function createScene(canvas: HTMLCanvasElement, opts: SceneOptions = {}):
     controls.update();
     renderer.render(scene, camera);
   };
+
+  const resize = () => {
+    const w = Math.max(1, canvas.clientWidth);
+    const h = Math.max(1, canvas.clientHeight);
+    renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, maxPixelRatio));
+    renderer.setSize(w, h, false);
+    camera.aspect = w / h;
+    camera.updateProjectionMatrix();
+    // setSize clears the canvas; redraw when no loop will do it.
+    if (raf === 0 && !disposed) render();
+  };
+  resize();
+  const observer = new ResizeObserver(resize);
+  observer.observe(canvas);
+
+  // Moving to a screen with another devicePixelRatio doesn't change the CSS
+  // size, so watch the DPR separately (the media query is per-ratio).
+  let dprQuery: MediaQueryList | null = null;
+  const onDprChange = () => {
+    resize();
+    watchDpr();
+  };
+  const watchDpr = () => {
+    dprQuery?.removeEventListener('change', onDprChange);
+    dprQuery = window.matchMedia(`(resolution: ${window.devicePixelRatio || 1}dppx)`);
+    dprQuery.addEventListener('change', onDprChange);
+  };
+  watchDpr();
 
   const handle: SceneHandle = {
     renderer,
@@ -86,7 +105,6 @@ export function createScene(canvas: HTMLCanvasElement, opts: SceneOptions = {}):
       camera.near = dist / 100;
       camera.far = dist * 100;
       camera.position.set(dist * 0.55, -dist * 0.65, dist * 0.55);
-      camera.up.set(0, 0, 1);
       controls.target.set(0, 0, 0);
       camera.updateProjectionMatrix();
       controls.update();
@@ -115,6 +133,7 @@ export function createScene(canvas: HTMLCanvasElement, opts: SceneOptions = {}):
       disposed = true;
       handle.stop();
       observer.disconnect();
+      dprQuery?.removeEventListener('change', onDprChange);
       controls.dispose();
       disposeObject(scene);
       scene.clear();

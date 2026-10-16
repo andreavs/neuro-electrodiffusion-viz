@@ -161,6 +161,7 @@ view.start((dtMs, now) => {
 // Slice scrubbing with the keyboard: x/y/z then [ and ].
 let active = 2;
 window.addEventListener('keydown', (e) => {
+  if (e.target instanceof HTMLInputElement) return;
   if (e.key === 'x' || e.key === 'y' || e.key === 'z') active = 'xyz'.indexOf(e.key);
   if (e.key === '[') slices[active].index--;
   if (e.key === ']') slices[active].index++;

@@ -37,6 +37,7 @@ export const COLORMAP_GLSL = /* glsl */ `
 uniform sampler2D uCmap;
 uniform vec2 uRange;
 vec3 colormap(float v) {
+  if (v != v) return vec3(0.5); // NaN: neutral grey "no data"
   float span = uRange.y - uRange.x;
   float t = span > 0.0 ? clamp((v - uRange.x) / span, 0.0, 1.0) : 0.5;
   return texture2D(uCmap, vec2(t * (255.0 / 256.0) + 0.5 / 256.0, 0.5)).rgb;

@@ -30,6 +30,7 @@ export class TimeSeriesPlot {
   private readonly ctx: CanvasRenderingContext2D;
   private readonly observer: ResizeObserver;
   private dirty = true;
+  private fg = '';
 
   constructor(canvas: HTMLCanvasElement, opts: TimeSeriesOptions) {
     this.canvas = canvas;
@@ -40,6 +41,7 @@ export class TimeSeriesPlot {
     this.buffers = opts.traces.map(() => new RingBuffer(opts.capacity ?? 4096));
     this.observer = new ResizeObserver(() => {
       this.dirty = true;
+      this.fg = ''; // re-read the text colour (theme may have changed)
     });
     this.observer.observe(canvas);
   }
@@ -68,8 +70,8 @@ export class TimeSeriesPlot {
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
     ctx.clearRect(0, 0, cw, ch);
 
-    const style = getComputedStyle(canvas);
-    const fg = style.color || '#222';
+    if (!this.fg) this.fg = getComputedStyle(canvas).color || '#222';
+    const fg = this.fg;
     ctx.font = '11px system-ui, sans-serif';
 
     let tMax = -Infinity;
@@ -79,8 +81,14 @@ export class TimeSeriesPlot {
 
     let yMin = Infinity;
     let yMax = -Infinity;
-    if (opts.yRange) [yMin, yMax] = opts.yRange;
-    else {
+    if (opts.yRange) {
+      [yMin, yMax] = opts.yRange;
+      if (!(yMax > yMin)) {
+        const pad = Math.max(1e-6, Math.abs(yMax) * 0.05);
+        yMin -= pad;
+        yMax += pad;
+      }
+    } else {
       for (const b of this.buffers) {
         for (let i = b.firstIndexAtOrAfter(tMin); i < b.length; i++) {
           const v = b.valueAt(i);
@@ -144,17 +152,32 @@ export class TimeSeriesPlot {
       ctx.strokeStyle = opts.traces[k].color;
       ctx.beginPath();
       const start = Math.max(0, b.firstIndexAtOrAfter(tMin) - 1);
-      // Draw at most ~one vertex per pixel column.
-      const stride = Math.max(1, Math.floor((b.length - start) / (pw * 2)));
+      // Min/max per pixel column: keeps spikes (e.g. an AP peak) when there
+      // are more samples than pixels, and is stable as the window scrolls.
+      let col = Math.floor(sx(b.timeAt(start)));
+      let lo = Infinity;
+      let hi = -Infinity;
       let first = true;
-      for (let i = start; i < b.length; i += stride) {
-        const x = sx(b.timeAt(i));
-        const y = sy(b.valueAt(i));
-        if (first) ctx.moveTo(x, y);
-        else ctx.lineTo(x, y);
+      const flush = () => {
+        if (lo > hi) return;
+        if (first) ctx.moveTo(col, sy(lo));
+        else ctx.lineTo(col, sy(lo));
+        if (hi !== lo) ctx.lineTo(col, sy(hi));
         first = false;
+      };
+      for (let i = start; i < b.length; i++) {
+        const c = Math.floor(sx(b.timeAt(i)));
+        const v = b.valueAt(i);
+        if (c !== col) {
+          flush();
+          col = c;
+          lo = Infinity;
+          hi = -Infinity;
+        }
+        if (v < lo) lo = v;
+        if (v > hi) hi = v;
       }
-      ctx.lineTo(sx(b.timeAt(b.length - 1)), sy(b.valueAt(b.length - 1)));
+      flush();
       ctx.stroke();
     });
     ctx.restore();

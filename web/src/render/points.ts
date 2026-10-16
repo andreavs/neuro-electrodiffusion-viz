@@ -24,7 +24,8 @@ export class PointCloud implements Colormapped {
   readonly uniforms: ColormapUniforms & {
     uSize: THREE.IUniform<number>;
     uViewportHeight: THREE.IUniform<number>;
-    uColor: THREE.IUniform<THREE.Color>;
+    /** sRGB components (written raw to the framebuffer, like the LUTs). */
+    uColor: THREE.IUniform<THREE.Vector3>;
     uUseMap: THREE.IUniform<boolean>;
   };
   readonly capacity: number;
@@ -47,7 +48,7 @@ export class PointCloud implements Colormapped {
       ...colormapUniforms(opts.colormap ?? viridis, opts.range),
       uSize: { value: opts.size },
       uViewportHeight: { value: 1 },
-      uColor: { value: new THREE.Color(opts.color ?? 0xffb000) },
+      uColor: { value: new THREE.Vector3() },
       uUseMap: { value: opts.colormap !== undefined },
     };
     const material = new THREE.ShaderMaterial({
@@ -77,6 +78,7 @@ export class PointCloud implements Colormapped {
           gl_FragColor = vec4(base * (1.0 - 0.35 * r2), 1.0);
         }`,
     });
+    this.setColor(opts.color ?? 0xffb000);
     this.points = new THREE.Points(geometry, material);
     this.points.frustumCulled = false;
     const size = new THREE.Vector2();
@@ -85,13 +87,20 @@ export class PointCloud implements Colormapped {
     };
   }
 
+  /** Uniform colour used when no colormap was given. */
+  setColor(color: THREE.ColorRepresentation): void {
+    const c = new THREE.Color(color).getRGB({ r: 0, g: 0, b: 0 }, THREE.SRGBColorSpace);
+    this.uniforms.uColor.value.set(c.r, c.g, c.b);
+  }
+
   get count(): number {
     return this._count;
   }
 
   /**
    * Show the first `count` points of `xyz` (defaults to `xyz.length / 3`,
-   * clamped to capacity). `values`, if given, colours each point.
+   * clamped to capacity). `values`, if given, colours each point and must
+   * hold at least `count` entries; when omitted, the previous values stay.
    */
   update(xyz: Float32Array, count = Math.floor(xyz.length / 3), values?: Float32Array): void {
     const n = Math.min(count, this.capacity, Math.floor(xyz.length / 3));
@@ -101,10 +110,10 @@ export class PointCloud implements Colormapped {
     this.position.addUpdateRange(0, n * 3);
     this.position.needsUpdate = true;
     if (values) {
-      const m = Math.min(n, values.length);
-      (this.value.array as Float32Array).set(m === values.length ? values : values.subarray(0, m));
+      if (values.length < n) throw new RangeError(`need ${n} values, got ${values.length}`);
+      (this.value.array as Float32Array).set(n === values.length ? values : values.subarray(0, n));
       this.value.clearUpdateRanges();
-      this.value.addUpdateRange(0, m);
+      this.value.addUpdateRange(0, n);
       this.value.needsUpdate = true;
     }
     this._count = n;
