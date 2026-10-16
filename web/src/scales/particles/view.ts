@@ -10,6 +10,7 @@ import { PARTICLE_PARAMS, signedDrop } from './params';
 import { LinePlot } from './plot';
 import { formatMfpt, histogramSteps, maxOf, mfptReadout } from './stats';
 import './view.css';
+import { createTour } from './tour';
 
 /** Matches the solver's DISPLAY_MAX: ions beyond it are simulated but not drawn. */
 const MAX_IONS = 100_000;
@@ -163,6 +164,20 @@ export function createParticlesView(): ScaleView {
         view.scene.add(arrows);
       };
       arrowToggle.addEventListener('change', refreshArrows);
+      q('.pv-head').after(
+        createTour({
+          apply: (p) => {
+            const changed = panel.setValues(p);
+            refreshArrows();
+            if (changed && !panel.isRunning) panel.setRunning(true);
+            return changed;
+          },
+          release: () => {
+            client.action('release');
+            if (!panel.isRunning) panel.setRunning(true);
+          },
+        }),
+      );
       const onPanel = (ev: Event) => {
         const k = (ev.target as HTMLElement).dataset?.key;
         if (k === 'field' || k === 'dv' || k === 'direction') refreshArrows();
