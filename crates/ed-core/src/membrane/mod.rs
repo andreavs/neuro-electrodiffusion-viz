@@ -313,8 +313,9 @@ impl MembranePatches {
     }
 
     /// Use a [`hh::GateTable`] for the gate updates in [`advance`](Self::advance): several
-    /// times faster for large populations, with gate values within ~10⁻⁵ of the exact
-    /// update. Off by default.
+    /// times faster for large populations, with gate values within ~10⁻⁶ of the exact
+    /// update. The table is rebuilt (and reallocated) whenever the substep length or
+    /// `v_rest_hh` changes, so keep `dt / substeps` fixed. Off by default.
     pub fn use_gate_table(&mut self, enabled: bool) {
         self.use_table = enabled;
     }
@@ -421,7 +422,7 @@ impl MembranePatches {
         {
             self.gate_table = Some(hh::GateTable::new(v_rest, h));
         }
-        let table = if self.use_table {
+        let table = if hh && self.use_table {
             self.gate_table.take()
         } else {
             None

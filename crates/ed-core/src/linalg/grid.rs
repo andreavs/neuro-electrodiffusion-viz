@@ -159,7 +159,10 @@ impl BoundaryConditions {
 ///
 /// Individual interior faces can override the harmonic mean with
 /// [`set_face_sigma`](Self::set_face_sigma), e.g. to give a membrane between two cells a
-/// conductance unrelated to either cell, or 0 to make it impermeable.
+/// conductance unrelated to either cell, or 0 to make it impermeable. Closing faces can
+/// split the domain: without a shift, every closed-off region then adds its own constant
+/// to the null space, which [`NullSpace::Constant`](super::NullSpace) does not remove.
+/// A cell with σ = 0 is no longer a zero row if one of its faces is overridden.
 #[derive(Clone, Debug)]
 pub struct DiffusionOperator {
     grid: Grid,
@@ -290,7 +293,7 @@ impl DiffusionOperator {
         self.recompute();
     }
 
-    /// Rebuilds face coefficients (unless [`explicit_faces`](Self::explicit_faces)) and the
+    /// Rebuilds face coefficients (unless `explicit_faces`) and the
     /// diagonal from `self.sigma`, the overrides and `self.shift`.
     pub(super) fn recompute(&mut self) {
         let g = self.grid;

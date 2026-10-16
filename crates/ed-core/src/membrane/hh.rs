@@ -85,7 +85,7 @@ pub fn steady_state(phi_m: f64, v_rest: f64) -> (f64, f64, f64) {
 ///
 /// Each row holds `(x_∞, e^{−dt(α+β)})` for m, h and n; values in between are linearly
 /// interpolated, which is about 5× faster than evaluating the rates and agrees with
-/// [`Rates::rush_larsen`] to ~10⁻⁵ in the gate values. Potentials outside the table fall
+/// [`Rates::rush_larsen`] to ~10⁻⁶ in the gate values. Potentials outside the table fall
 /// back to the exact rates.
 #[derive(Debug, Clone, PartialEq)]
 pub struct GateTable {
@@ -182,6 +182,7 @@ mod tests {
             let exact = [rates_m, rates_h, rates_n].map(|f| f(phi, -65.0));
             let fast = table.step(phi, g);
             for k in 0..3 {
+                assert!(fast[k].is_finite(), "non-finite gate at {phi} mV");
                 worst = worst.max((fast[k] - exact[k].rush_larsen(g[k], 0.004)).abs());
             }
         }

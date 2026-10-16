@@ -112,7 +112,7 @@ impl Multigrid {
         assert_eq!(
             fine.face_sigma().len(),
             self.ops[0].face_sigma().len(),
-            "rebuild the multigrid after changing which faces are overridden"
+            "the number of overridden faces changed: rebuild the multigrid"
         );
         let top = &mut self.ops[0];
         top.sigma.copy_from_slice(&fine.sigma);
