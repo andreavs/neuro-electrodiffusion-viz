@@ -242,8 +242,6 @@ pub struct ParticleSim<G: Geometry> {
     ex: Vec<f64>,
     ey: Vec<f64>,
     ez: Vec<f64>,
-    /// Particles that escaped during the current step, moved to `ex/ey/ez` at its end.
-    pending: Vec<Vec3>,
     /// Time of the last step that began with particles inside, ms.
     passage_time: f64,
 }
@@ -273,7 +271,6 @@ impl<G: Geometry> ParticleSim<G> {
             ex: Vec::new(),
             ey: Vec::new(),
             ez: Vec::new(),
-            pending: Vec::new(),
             passage_time: 0.0,
         }
     }
@@ -354,14 +351,17 @@ impl<G: Geometry> ParticleSim<G> {
         if gone {
             compact([&mut self.ex, &mut self.ey, &mut self.ez]);
         }
-        let (geom, exit_times, pending) = (&self.geom, &mut self.exit_times, &mut self.pending);
+        let (geom, exit_times) = (&self.geom, &mut self.exit_times);
+        let (ex, ey, ez) = (&mut self.ex, &mut self.ey, &mut self.ez);
         let pop = [&mut self.x, &mut self.y, &mut self.z];
         let left = mover.advance(geom, &mut self.rng, pop, |outcome| match outcome {
             StepOutcome::Inside(r) if !geom.escaped(r) => Some(r),
             outcome => {
                 exit_times.push(t_end);
                 if let StepOutcome::Inside(r) = outcome {
-                    pending.push(r);
+                    ex.push(r[0]);
+                    ey.push(r[1]);
+                    ez.push(r[2]);
                 }
                 None
             }
@@ -369,19 +369,14 @@ impl<G: Geometry> ParticleSim<G> {
         if left {
             compact([&mut self.x, &mut self.y, &mut self.z]);
         }
-        for p in self.pending.drain(..) {
-            self.ex.push(p[0]);
-            self.ey.push(p[1]);
-            self.ez.push(p[2]);
-        }
         self.time = t_end;
         self.steps += 1;
         if in_spine {
             self.passage_time = t_end;
             // Always sample the moment the last particle escapes, so the curve ends at 0.
             if self.steps % self.survival_every == 0 || self.x.is_empty() {
-                self.survival.push((self.time, self.survival_fraction()));
-                if self.survival.len() >= SURVIVAL_CAPACITY {
+                // Thin before pushing, so the newest sample (maybe the last exit) is kept.
+                if self.survival.len() + 1 >= SURVIVAL_CAPACITY {
                     // Keep t = 0 and every other sample; sample half as often from now on.
                     let mut k = 0;
                     self.survival.retain(|_| {
@@ -390,6 +385,7 @@ impl<G: Geometry> ParticleSim<G> {
                     });
                     self.survival_every *= 2;
                 }
+                self.survival.push((self.time, self.survival_fraction()));
             }
         }
     }
@@ -400,6 +396,7 @@ impl<G: Geometry> ParticleSim<G> {
     }
 
     /// Escaped particles that are still moving (always 0 when escaping means absorption).
+    /// They stay counted here even if they wander back out of the escaped region.
     pub fn n_escaped_moving(&self) -> usize {
         self.ex.len()
     }
@@ -511,7 +508,8 @@ impl<G: Geometry> ParticleSim<G> {
         }
     }
 
-    /// Calls `f` with the position (f64, µm) of every escaped particle still moving.
+    /// Calls `f` with the position (f64, µm) of every escaped particle still moving,
+    /// wherever it now is.
     pub fn for_each_escaped_position(&self, mut f: impl FnMut(Vec3)) {
         for i in 0..self.ex.len() {
             f([self.ex[i], self.ey[i], self.ez[i]]);
@@ -815,16 +813,52 @@ mod tests {
 
     #[test]
     fn last_exit_is_always_sampled() {
-        let mut sim = ParticleSim::new(Ledge, ParticleParams::default(), 4)
-            .with_field(UniformField([0.0, 0.0, -50.0]));
-        sim.release(3);
-        while sim.n_alive() > 0 {
-            sim.step_once();
+        // Long enough that the survival buffer has been thinned and is sampled sparsely.
+        let params = ParticleParams {
+            d: 1e-16,
+            dt: 1e-3,
+            ..Default::default()
+        };
+        // The buffer fills at step 4094; an exit at 4093 is the sample that fills it.
+        for steps in 4090..4100 {
+            let mut sim = ParticleSim::new(Ledge, params, 4);
+            sim.release(1);
+            // Falls through z = 0 at exactly step `steps`; the noise is negligible.
+            let v = 0.05 / (steps as f64 - 0.5);
+            sim.set_field(UniformField([0.0, 0.0, -v / params.mobility_dt()]));
+            while sim.n_alive() > 0 {
+                sim.step_once();
+            }
+            assert!(sim.survival_every > 1);
+            assert_eq!(
+                sim.survival_curve().last().unwrap(),
+                &(sim.passage_time(), 0.0)
+            );
         }
-        assert_eq!(
-            sim.survival_curve().last().unwrap(),
-            &(sim.passage_time(), 0.0)
-        );
+    }
+
+    #[test]
+    fn escaped_particles_move_once_per_step() {
+        // No noise to speak of: every particle falls by the same drift each step.
+        let params = ParticleParams {
+            d: 1e-12,
+            dt: 1e-3,
+            ..Default::default()
+        };
+        let drift = 0.01;
+        let mut sim = ParticleSim::new(Ledge, params, 6).with_field(UniformField([
+            0.0,
+            0.0,
+            -drift / params.mobility_dt(),
+        ]));
+        sim.release(10);
+        for k in 1..=20 {
+            sim.step_once();
+            let z = 0.05 - k as f64 * drift;
+            sim.for_each_position(|p| assert!((p[2] - z).abs() < 1e-6));
+            sim.for_each_escaped_position(|p| assert!((p[2] - z).abs() < 1e-6, "step {k}: {p:?}"));
+        }
+        assert_eq!(sim.n_escaped_moving(), 10);
     }
 
     // ---- First-passage tests. These run long simulations; CI runs tests in release mode. ----

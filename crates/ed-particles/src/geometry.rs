@@ -23,7 +23,8 @@ pub trait Geometry {
 
     /// Whether the inside point `p` lies past the first-passage target, so a particle that
     /// reaches it counts as escaped but keeps moving. Domains whose target is an absorbing
-    /// wall keep the default.
+    /// wall keep the default. Only where a step ends is tested, so a step that dips into the
+    /// region and back is not counted (unlike absorbing walls, which see the whole segment).
     #[inline]
     fn escaped(&self, _p: Vec3) -> bool {
         false
