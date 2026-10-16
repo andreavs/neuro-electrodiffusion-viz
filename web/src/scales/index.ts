@@ -1,10 +1,10 @@
 import { createEmiView } from './emi/view';
-import { createKnpView } from './knp/view';
+import { createTissueView } from './knp/scenario';
 import { createParticlesView } from './particles/view';
 import type { ScaleId, ScaleView } from './registry';
 
 const VIEWS: Record<ScaleId, () => ScaleView> = {
-  knp: createKnpView,
+  knp: createTissueView,
   emi: createEmiView,
   particles: createParticlesView,
 };
