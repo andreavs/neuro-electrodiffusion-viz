@@ -42,6 +42,8 @@ export const about: AboutContent = {
     'Neurons are one-way coupled point sources: their membrane currents drive the extracellular dynamics, but extracellular changes do not feed back on the neurons (no ephaptic effects).',
     'The generic anion X⁻ stands in for Cl⁻ and other anions and carries Cl⁻ properties.',
     'No advection or bulk fluid flow; temperature is constant.',
+    'Hay et al. cell, as in the paper: their L5b pyramidal cell (cell1, L5PCbiophys3 channels at 34 °C, 196 sections, 642 segments), ported from NEURON to run in the browser. Simplifications: each segment is a straight cylinder with its true area and axial resistance; branches attach to the centre of the soma compartment; Ih and synaptic currents are split into Na⁺ and K⁺ parts that reverse at E_Na and E_K, the leak (E = −90 mV) is carried by K⁺, and Ca²⁺ currents enter the Ca²⁺ species; reversal potentials are fixed (E_Na 50, E_K −85 mV); synapses are single-exponential conductances (τ = 2 ms, E = 0 mV) placed by membrane area, with no ion pumps.',
+    'Simplified cell: 115 compartments with Hodgkin-Huxley soma and axon and passive dendrites.',
   ],
   parameters: [
     { symbol: String.raw`\psi = RT/F`, description: 'Thermal voltage at $T = 300$ K', value: '25.85 mV' },
@@ -61,6 +63,10 @@ export const about: AboutContent = {
     {
       text: 'A. Solbrå, A. W. Bergersen, J. van den Brink, A. Malthe-Sørenssen, G. T. Einevoll, G. Halnes. A Kirchhoff-Nernst-Planck framework for modeling large scale extracellular electrodiffusion surrounding morphologically detailed neurons. PLOS Computational Biology 14(10): e1006510 (2018).',
       href: 'https://doi.org/10.1371/journal.pcbi.1006510',
+    },
+    {
+      text: 'E. Hay, S. Hill, F. Schürmann, H. Markram, I. Segev. Models of neocortical layer 5b pyramidal cells capturing a wide range of dendritic and perisomatic active properties. PLOS Computational Biology 7(7): e1002107 (2011). Model: ModelDB 139653.',
+      href: 'https://doi.org/10.1371/journal.pcbi.1002107',
     },
     {
       text: 'Original implementation (FEniCS): CINPLA/KNPsim',

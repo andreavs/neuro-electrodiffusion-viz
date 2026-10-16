@@ -58,8 +58,8 @@ export function createKnpView(): ScaleView {
           <header class="kv-head">
             <h2>${info.title}</h2>
             <p class="muted">A pyramidal neuron, driven by random synaptic input, sits in a column of tissue. Every
-              compartment releases and takes up Na⁺, K⁺ and Cl⁻ (X⁻) at a point, and the ions spread through the
-              extracellular space by diffusion and electric drift (the KNP framework of Publication 1). Watch K⁺ build
+              compartment releases and takes up Na⁺, K⁺, Cl⁻ (X⁻) and, in the Hay et al. cell, Ca²⁺ at a point, and the ions
+              spread through the extracellular space by diffusion and electric drift (the KNP framework of Publication 1). Watch K⁺ build
               up around the soma as the cell fires. The cell is coloured by its membrane potential; click a slice to
               place a probe.</p>
           </header>
@@ -124,8 +124,10 @@ export function createKnpView(): ScaleView {
       plots = [somaPlot];
       let probePlot: TimeSeriesPlot | null = null;
 
-      // Built from the first frame, once the grid is known.
+      // Built from the first frame, once the grid is known, and rebuilt when the cell changes.
       let size: Vec3 | null = null;
+      let built: THREE.Object3D[] = [];
+      let builtComps = 0;
       let shape: Vec3 = [1, 1, 1];
       let slices: Partial<Record<Axis, SlicePlane>> = {};
       let neuron: SurfaceField | null = null;
@@ -241,26 +243,48 @@ export function createKnpView(): ScaleView {
             smooth: view.floatLinear,
           });
           view.scene.add(slices[a]!.mesh);
+          built.push(slices[a]!.mesh);
         });
         const box = new THREE.LineSegments(
           new THREE.EdgesGeometry(new THREE.BoxGeometry(extent.x, extent.y, extent.z)),
           new THREE.LineBasicMaterial({ color: 0x8890a8 }),
         );
         view.scene.add(box);
+        built.push(box);
         const mesh = buildNeuron(comps, dims);
         vertexComp = mesh.vertexComp;
         vertexValues = new Float32Array(vertexComp.length);
         neuron = new SurfaceField(mesh.geometry, coolwarm, V_RANGE);
         view.scene.add(neuron.mesh);
+        built.push(neuron.mesh);
+        neuron.mesh.visible = showNeuron.checked;
+        builtComps = comps.length;
         view.frameBox(extent);
         size = dims; // last, so a failed build is retried on the next frame
         layoutSlices();
         setProbes(DEFAULT_PROBES.map((p) => [0, 1, 2].map((a) => p[a]! + soma[a]!) as Vec3));
       };
 
+      /** Removes what `build` added, so the next frame builds the scene for a new cell. */
+      const teardown = () => {
+        for (const o of built) {
+          view.scene.remove(o);
+          disposeObject(o);
+        }
+        built = [];
+        slices = {};
+        neuron = null;
+        lastField = null; // sized for the old grid
+        size = null;
+      };
+
       const draw = (frame: FrameMessage) => {
         const f = Object.fromEntries(frame.fields.map((x) => [x.name, x.data]));
         const field = frame.fields[0]!;
+        if (size && f.compartments!.length !== builtComps) {
+          teardown();
+          lastTime = Infinity; // a different cell: clear the plots below
+        }
         if (!size) build(frame, f);
         if (field.name !== shownField) {
           shownField = field.name;

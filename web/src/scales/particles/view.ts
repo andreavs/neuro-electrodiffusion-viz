@@ -1,5 +1,5 @@
 import * as THREE from 'three';
-import { ExpandingRange, PointCloud, createScene, disposeObject, type Colormap, type SceneHandle } from '../../render';
+import { ExpandingRange, PointCloud, createScene, watchRenderStyle, disposeObject, type Colormap, type SceneHandle } from '../../render';
 import type { SimClient } from '../../sim/client';
 import type { FrameMessage } from '../../sim/protocol';
 import { createAboutPanel } from '../../ui/about';
@@ -11,7 +11,10 @@ import { LinePlot } from './plot';
 import { formatMfpt, histogramSteps, maxOf, mfptReadout } from './stats';
 import './view.css';
 
+/** Matches the solver's DISPLAY_MAX: ions beyond it are simulated but not drawn. */
 const MAX_IONS = 100_000;
+/** Brightness of each glowing ion (the bloom threshold keeps a dense cloud from burning out). */
+const GLOW_BRIGHTNESS = 1;
 const NECK_COLOR = '#ff9f1c';
 const HEAD_COLOR = '#4cc9f0';
 const FIELD_COLOR = '#e4572e';
@@ -22,7 +25,7 @@ function regionColormap(): Colormap {
   const lut = new Uint8Array(256 * 4);
   const [a, b] = [new THREE.Color(NECK_COLOR), new THREE.Color(HEAD_COLOR)];
   for (let i = 0; i < 256; i++) {
-    // The LUT is sampled raw, so store sRGB components (THREE.Color holds linear ones).
+    // LUT bytes are sRGB, like every colormap (THREE.Color holds linear components).
     const c = (i < 128 ? a : b).getRGB({ r: 0, g: 0, b: 0 }, THREE.SRGBColorSpace);
     lut.set([Math.round(c.r * 255), Math.round(c.g * 255), Math.round(c.b * 255), 255], 4 * i);
   }
@@ -83,6 +86,7 @@ export function createParticlesView(): ScaleView {
   let scene: SceneHandle | null = null;
   let plots: LinePlot[] = [];
   let disposed = false;
+  let stopStyle: (() => void) | null = null;
 
   return {
     async mount(root: HTMLElement, client: SimClient) {
@@ -180,11 +184,12 @@ export function createParticlesView(): ScaleView {
         const stats = frame.stats ?? {};
         cloud.update(f.positions!, f.positions!.length / 3, f.regions);
 
-        const profile = f.profile!;
+        // The sharded solver's first frame after a release can arrive before the wall profile.
+        const profile = f.profile ?? new Float32Array(0);
         let sum = 0;
         for (let i = 0; i < profile.length; i++) sum += profile[i]! * (i + 1);
         const key = `${profile.length}:${sum}`;
-        if (key !== spineKey) {
+        if (key !== spineKey && profile.length >= 4) {
           spineKey = key;
           if (spine) {
             disposeObject(spine);
@@ -228,6 +233,13 @@ export function createParticlesView(): ScaleView {
       };
 
       // Draw the empty spine scene straight away; the data arrives once the solver is ready.
+      let glow = false;
+      stopStyle = watchRenderStyle((style) => {
+        glow = style === 'glow';
+        view.setBackground(glow ? 0x05060a : null);
+        view.setBloom(glow ? { strength: 0.8, radius: 0.5, threshold: 0.5 } : null);
+        cloud.setGlow(glow, GLOW_BRIGHTNESS);
+      });
       view.start();
       try {
         await client.ready();
@@ -245,6 +257,8 @@ export function createParticlesView(): ScaleView {
     },
     unmount() {
       disposed = true;
+      stopStyle?.();
+      stopStyle = null;
       for (const p of plots) p.dispose();
       plots = [];
       scene?.dispose();

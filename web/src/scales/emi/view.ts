@@ -6,9 +6,14 @@ import {
   coolwarm,
   createScene,
   disposeObject,
+  icefire,
+  inferno,
+  setColormap,
   setRange,
   viridis,
+  watchRenderStyle,
   type Colormap,
+  type RenderStyle,
   type SceneHandle,
 } from '../../render';
 import type { SimClient } from '../../sim/client';
@@ -54,6 +59,7 @@ export function createEmiView(): ScaleView {
   let scene: SceneHandle | null = null;
   let plots: TimeSeriesPlot[] = [];
   let disposed = false;
+  let stopStyle: (() => void) | null = null;
 
   return {
     async mount(root: HTMLElement, client: SimClient) {
@@ -97,10 +103,17 @@ export function createEmiView(): ScaleView {
       const bundle = new THREE.Group();
       view.scene.add(bundle);
 
+      let style: RenderStyle = 'classic';
+      const glow = () => style === 'glow';
+      // Glow: maps that start (or centre) at black, so quiet regions fade into the dark stage.
+      const membraneMap = () => (glow() ? inferno : viridis);
+      const sliceMap = (field: string) =>
+        glow() ? (field === 'phi' ? icefire : inferno) : (FIELDS[field]?.colormap ?? coolwarm);
+
       const bars = q('.ev-bars');
       let membrane: Layer | null = null;
       const membraneBar = new Colorbar({
-        colormap: viridis,
+        colormap: membraneMap(),
         label: 'φ_M',
         units: 'mV',
         auto: false,
@@ -137,9 +150,10 @@ export function createEmiView(): ScaleView {
 
       const rebuildMeshes = () => {
         const axis = sliceAxisOf(corners);
-        membrane = replace(membrane, membraneMesh(nodes, quads, axis, slicePlane(corners, axis)), viridis);
+        membrane = replace(membrane, membraneMesh(nodes, quads, axis, slicePlane(corners, axis)), membraneMap());
         setRange(membrane.field, membraneBar.range);
-        slice = replace(slice, sliceMesh(corners, tags, inside), FIELDS[sliceField]?.colormap ?? coolwarm);
+        membrane.field.setGlow(glow());
+        slice = replace(slice, sliceMesh(corners, tags, inside), sliceMap(sliceField));
       };
 
       let framed = '';
@@ -224,7 +238,7 @@ export function createEmiView(): ScaleView {
           sliceField = fieldKey;
           const spec = FIELDS[fieldKey] ?? FIELDS.phi!;
           sliceBar?.dispose();
-          sliceBar = new Colorbar({ colormap: spec.colormap, label: spec.label, units: spec.units });
+          sliceBar = new Colorbar({ colormap: sliceMap(fieldKey), label: spec.label, units: spec.units });
           bars.append(sliceBar.el);
           meshesStale = true;
         }
@@ -270,6 +284,20 @@ export function createEmiView(): ScaleView {
         setRange(slice!.field, sliceBar!.update(sv));
       };
 
+      stopStyle = watchRenderStyle((next) => {
+        if (next === style) return;
+        style = next;
+        view.setBackground(glow() ? 0x05060a : null);
+        view.setBloom(glow() ? { strength: 0.9, radius: 0.5, threshold: 0.45 } : null);
+        // Recolour in place (also while paused, when no frame will rebuild anything).
+        membraneBar.setColormap(membraneMap());
+        sliceBar?.setColormap(sliceMap(sliceField));
+        if (membrane) {
+          setColormap(membrane.field, membraneMap());
+          membrane.field.setGlow(glow());
+        }
+        if (slice) setColormap(slice.field, sliceMap(sliceField));
+      });
       view.start();
       try {
         await client.ready();
@@ -287,6 +315,8 @@ export function createEmiView(): ScaleView {
     },
     unmount() {
       disposed = true;
+      stopStyle?.();
+      stopStyle = null;
       for (const p of plots) p.dispose();
       plots = [];
       scene?.dispose();

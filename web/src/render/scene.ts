@@ -1,5 +1,9 @@
 import * as THREE from 'three';
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
+import { EffectComposer } from 'three/examples/jsm/postprocessing/EffectComposer.js';
+import { OutputPass } from 'three/examples/jsm/postprocessing/OutputPass.js';
+import { RenderPass } from 'three/examples/jsm/postprocessing/RenderPass.js';
+import { UnrealBloomPass } from 'three/examples/jsm/postprocessing/UnrealBloomPass.js';
 import { disposeObject } from './gpu';
 
 export interface SceneOptions {
@@ -11,6 +15,15 @@ export interface SceneOptions {
   antialias?: boolean;
 }
 
+export interface BloomOptions {
+  /** Glow intensity. Default 0.9. */
+  strength?: number;
+  /** Glow spread, 0 to 1. Default 0.5. */
+  radius?: number;
+  /** Linear brightness above which pixels glow. Default 0.6. */
+  threshold?: number;
+}
+
 export interface SceneHandle {
   readonly renderer: THREE.WebGLRenderer;
   readonly scene: THREE.Scene;
@@ -20,6 +33,14 @@ export interface SceneHandle {
   readonly floatLinear: boolean;
   /** Point the camera at a box of the given size centred on the origin. */
   frameBox(size: THREE.Vector3Like): void;
+  /**
+   * Turn bloom post-processing on (rendering into an HDR, multisampled buffer)
+   * or off (`null`, plain rendering straight to the canvas). Stays off on GPUs
+   * that cannot render to float buffers and on software renderers.
+   */
+  setBloom(opts: BloomOptions | null): void;
+  /** Backdrop: a soft vignette around this colour; `null` makes the canvas transparent. */
+  setBackground(color: THREE.ColorRepresentation | null): void;
   /** Render once (controls are updated first). */
   render(): void;
   /** Start a requestAnimationFrame loop calling `onFrame(dtMs)` before each render. */
@@ -59,11 +80,29 @@ export function createScene(canvas: HTMLCanvasElement, opts: SceneOptions = {}):
   let raf = 0;
   let last = 0;
   let disposed = false;
+  let composer: EffectComposer | null = null;
+  let bloom: UnrealBloomPass | null = null;
 
   const render = () => {
     controls.update();
-    renderer.render(scene, camera);
+    if (composer) composer.render();
+    else renderer.render(scene, camera);
   };
+
+  let composerRatio = 0;
+  const sizeComposer = () => {
+    if (!composer) return;
+    // setPixelRatio reallocates every buffer itself; only call it when the ratio changes.
+    const ratio = renderer.getPixelRatio();
+    if (ratio !== composerRatio) composer.setPixelRatio(ratio);
+    composerRatio = ratio;
+    composer.setSize(Math.max(1, canvas.clientWidth), Math.max(1, canvas.clientHeight));
+  };
+  // Bloom renders into half-float targets; without float colour buffers it would draw nothing.
+  // Software renderers (SwiftShader, llvmpipe) can, but take seconds per bloomed frame.
+  const bloomable =
+    (renderer.extensions.has('EXT_color_buffer_float') || renderer.extensions.has('EXT_color_buffer_half_float')) &&
+    !isSoftwareRenderer(renderer);
 
   const resize = () => {
     const w = Math.max(1, canvas.clientWidth);
@@ -72,6 +111,7 @@ export function createScene(canvas: HTMLCanvasElement, opts: SceneOptions = {}):
     renderer.setSize(w, h, false);
     camera.aspect = w / h;
     camera.updateProjectionMatrix();
+    sizeComposer();
     // setSize clears the canvas; redraw when no loop will do it.
     if (raf === 0 && !disposed) render();
   };
@@ -109,6 +149,39 @@ export function createScene(canvas: HTMLCanvasElement, opts: SceneOptions = {}):
       camera.updateProjectionMatrix();
       controls.update();
     },
+    setBloom(opts) {
+      if (!opts || !bloomable) {
+        composer?.passes.forEach((p) => p.dispose());
+        composer?.dispose();
+        composer = null;
+        bloom = null;
+        if (raf === 0 && !disposed) render();
+        return;
+      }
+      if (!composer) {
+        const target = new THREE.WebGLRenderTarget(1, 1, { type: THREE.HalfFloatType, samples: 4 });
+        composer = new EffectComposer(renderer, target);
+        composer.renderTarget2.samples = 0; // only the scene pass needs multisampling
+        composerRatio = 0;
+        composer.addPass(new RenderPass(scene, camera));
+        bloom = new UnrealBloomPass(new THREE.Vector2(1, 1), 0.9, 0.5, 0.6);
+        composer.addPass(bloom);
+        composer.addPass(new OutputPass());
+        sizeComposer();
+      }
+      bloom!.strength = opts.strength ?? 0.9;
+      bloom!.radius = opts.radius ?? 0.5;
+      bloom!.threshold = opts.threshold ?? 0.6;
+      if (raf === 0 && !disposed) render();
+    },
+    setBackground(color) {
+      // Also as the scene background: the bloom passes clear with their own colour.
+      if (color == null) renderer.setClearColor(0x000000, 0);
+      else renderer.setClearColor(color, 1);
+      if (scene.background instanceof THREE.Texture) scene.background.dispose();
+      scene.background = color == null ? null : vignette(new THREE.Color(color));
+      if (raf === 0 && !disposed) render();
+    },
     render,
     start(onFrame) {
       if (disposed) return;
@@ -135,6 +208,8 @@ export function createScene(canvas: HTMLCanvasElement, opts: SceneOptions = {}):
       observer.disconnect();
       dprQuery?.removeEventListener('change', onDprChange);
       controls.dispose();
+      handle.setBloom(null);
+      if (scene.background instanceof THREE.Texture) scene.background.dispose();
       disposeObject(scene);
       scene.clear();
       renderer.dispose();
@@ -143,4 +218,28 @@ export function createScene(canvas: HTMLCanvasElement, opts: SceneOptions = {}):
     },
   };
   return handle;
+}
+
+/** A radial backdrop texture: `color` at the rim, slightly lifted towards the centre. */
+function vignette(color: THREE.Color): THREE.Texture {
+  const c = document.createElement('canvas');
+  c.width = c.height = 128;
+  const ctx = c.getContext('2d')!;
+  const css = (k: number) => `#${color.clone().lerp(new THREE.Color(0x3a4060), k).getHexString()}`;
+  const g = ctx.createRadialGradient(64, 54, 0, 64, 64, 90);
+  g.addColorStop(0, css(0.22));
+  g.addColorStop(1, css(0));
+  ctx.fillStyle = g;
+  ctx.fillRect(0, 0, 128, 128);
+  const tex = new THREE.CanvasTexture(c);
+  tex.colorSpace = THREE.SRGBColorSpace;
+  return tex;
+}
+
+/** True for CPU-emulated WebGL, where full-screen post-processing is far too slow. */
+function isSoftwareRenderer(renderer: THREE.WebGLRenderer): boolean {
+  const gl = renderer.getContext();
+  const info = gl.getExtension('WEBGL_debug_renderer_info');
+  const name = String(info ? gl.getParameter(info.UNMASKED_RENDERER_WEBGL) : gl.getParameter(gl.RENDERER));
+  return /swiftshader|llvmpipe|softpipe|software/i.test(name);
 }

@@ -3,6 +3,8 @@ import { defaultParams } from '../../ui/controls';
 import { ParticlesSim } from '../../wasm/pkg/ed_wasm.js';
 import type { FrameField, Params } from '../protocol';
 import type { SolverFactory, SolverFrame, WorkerSolver } from '../solver';
+import type { FromShard } from './particleShard';
+import { ShardedParticlesSolver, type ShardPort } from './shardedParticles';
 
 /** The parts of the wasm-bindgen `ParticlesSim` the adapter uses, so tests can pass a fake. */
 export interface ParticlesWasm {
@@ -110,7 +112,8 @@ export function makeParticlesSolver(
   const restart = () => {
     sim.set_dt(Number(params.dt));
     sim.set_field(String(params.field), signedDrop(Number(params.dv), String(params.direction)));
-    const n = Number(params.particles);
+    // One wasm population holds at most a million ions; more need the sharded solver.
+    const n = Math.min(Number(params.particles), 1_000_000);
     nReference = Math.min(n, REFERENCE_PARTICLES);
     sim.release(n, nReference);
     steps = 0;
@@ -159,5 +162,24 @@ export function makeParticlesSolver(
   };
 }
 
+/** Shard workers for the particle solver, one per spare core; inside the solver's own worker. */
+function spawnShard(index: number): ShardPort {
+  const w = new Worker(new URL('../particleShard.worker.ts', import.meta.url), {
+    type: 'module',
+    name: String(7919 * (index + 1)),
+  });
+  return {
+    post: (msg) => w.postMessage(msg),
+    onMessage: (cb) => {
+      w.onmessage = (ev: MessageEvent<FromShard>) => cb(ev.data);
+      w.onerror = (ev) => cb({ type: 'error', message: ev.message || 'shard worker failed to load' });
+    },
+    terminate: () => w.terminate(),
+  };
+}
+
+/** Spreads the ions over shard workers where nested workers exist; otherwise runs them here. */
 export const createParticlesSolver: SolverFactory = (params) =>
-  makeParticlesSolver(params, (geometry, dt, seed) => new ParticlesSim(geometry, dt, seed));
+  typeof Worker === 'function'
+    ? new ShardedParticlesSolver(params, spawnShard, navigator.hardwareConcurrency || 4)
+    : makeParticlesSolver(params, (geometry, dt, seed) => new ParticlesSim(geometry, dt, seed));

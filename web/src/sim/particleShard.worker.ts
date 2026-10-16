@@ -20,7 +20,7 @@ self.onmessage = (ev: MessageEvent<ToShard>) => {
       const state = runner.handle(msg);
       if (state) self.postMessage(state satisfies FromShard, shardTransferables(state));
     } catch (err) {
-      self.postMessage({ type: 'error', message: err instanceof Error ? err.message : String(err) } satisfies FromShard);
+      self.postMessage({ type: 'error', gen: msg.gen, message: err instanceof Error ? err.message : String(err) } satisfies FromShard);
     }
   });
 };
