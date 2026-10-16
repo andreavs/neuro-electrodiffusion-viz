@@ -156,15 +156,22 @@ impl BoundaryConditions {
 /// constants are its null space, provided the region with `σ > 0` is connected.
 /// Cells with `σ = 0` and no shift are uncoupled zero rows: keep the right-hand side zero
 /// there (their solution value is left at 0 by the multigrid smoother).
+///
+/// Interior faces can instead be given explicit coefficients with
+/// [`set_face_sigma`](Self::set_face_sigma), e.g. to cut the coupling across a membrane
+/// (σ = 0 on that face) or to use a face average other than the harmonic mean.
 #[derive(Clone, Debug)]
 pub struct DiffusionOperator {
     grid: Grid,
     bc: BoundaryConditions,
     pub(super) sigma: Vec<f64>,
     pub(super) shift: Vec<f64>,
+    /// Optional per-face coefficients: `face_sigma[a][cell]` is σ on the face between `cell`
+    /// and its upper neighbour along axis `a`. Replaces the harmonic mean when set.
+    pub(super) face_sigma: Option<[Vec<f64>; 3]>,
     /// `c[a][cell]` couples `cell` to its upper neighbour along axis `a` (0 on the last layer).
     c: [Vec<f64>; 3],
-    diag: Vec<f64>,
+    pub(super) diag: Vec<f64>,
     /// `1 / diag`, or 0 for rows with no coupling at all.
     inv_diag: Vec<f64>,
     /// `nx` zeros, standing in for missing neighbour rows.
@@ -189,6 +196,7 @@ impl DiffusionOperator {
             bc,
             sigma: sigma.to_vec(),
             shift: vec![0.0; n],
+            face_sigma: None,
             c: [vec![0.0; n], vec![0.0; n], vec![0.0; n]],
             diag: vec![0.0; n],
             inv_diag: vec![0.0; n],
@@ -235,11 +243,52 @@ impl DiffusionOperator {
         self.recompute();
     }
 
-    /// Rebuilds face coefficients and the diagonal from `self.sigma` and `self.shift`.
+    /// Per-face coefficients, if set with [`set_face_sigma`](Self::set_face_sigma).
+    pub fn face_sigma(&self) -> Option<&[Vec<f64>; 3]> {
+        self.face_sigma.as_ref()
+    }
+
+    /// Sets the coefficient of every interior face explicitly: `face[a][cell]` (≥ 0) is σ on
+    /// the face between `cell` and its upper neighbour along axis `a`; entries on the last
+    /// layer of each axis and on inactive axes are ignored. The per-cell σ is still used for
+    /// Dirichlet boundary faces. Does not reallocate after the first call. Call
+    /// [`Multigrid::update`](super::Multigrid::update) afterwards if one is in use.
+    pub fn set_face_sigma(&mut self, face: [&[f64]; 3]) {
+        let n = self.sigma.len();
+        assert!(
+            face.iter().all(|f| f.len() == n),
+            "face sigma must have one value per cell and axis"
+        );
+        let dst = self
+            .face_sigma
+            .get_or_insert_with(|| [vec![0.0; n], vec![0.0; n], vec![0.0; n]]);
+        for (d, f) in dst.iter_mut().zip(face) {
+            d.copy_from_slice(f);
+        }
+        self.recompute();
+    }
+
+    /// [`set_face_sigma`](Self::set_face_sigma) and [`set_shift`](Self::set_shift) in one
+    /// update.
+    pub fn set_face_sigma_and_shift(&mut self, face: [&[f64]; 3], shift: &[f64]) {
+        assert_eq!(shift.len(), self.shift.len());
+        self.shift.copy_from_slice(shift);
+        self.set_face_sigma(face);
+    }
+
+    /// Returns to harmonic-mean face coefficients.
+    pub fn clear_face_sigma(&mut self) {
+        self.face_sigma = None;
+        self.recompute();
+    }
+
+    /// Rebuilds face coefficients and the diagonal from `self.sigma`, `self.face_sigma`
+    /// and `self.shift`.
     pub(super) fn recompute(&mut self) {
         let g = self.grid;
         let stride = [1, g.n[0], g.n[0] * g.n[1]];
         let sigma = &self.sigma;
+        let face_sigma = self.face_sigma.as_ref();
         self.diag.copy_from_slice(&self.shift);
         for a in 0..3 {
             self.c[a].fill(0.0);
@@ -254,7 +303,11 @@ impl DiffusionOperator {
                 let pos = [i, j, k][a];
                 if pos + 1 < g.n[a] {
                     let nb = cell + stride[a];
-                    let w = harmonic_mean(sigma[cell], sigma[nb]) * inv_h2;
+                    let s = match face_sigma {
+                        Some(f) => f[a][cell],
+                        None => harmonic_mean(sigma[cell], sigma[nb]),
+                    };
+                    let w = s * inv_h2;
                     c[cell] = w;
                     diag[cell] += w;
                     diag[nb] += w;
@@ -473,6 +526,37 @@ impl DiffusionOperator {
         });
     }
 
+    /// Bandwidth of the operator: the largest index distance between coupled cells.
+    pub(super) fn bandwidth(&self) -> usize {
+        let n = self.grid.n;
+        match (0..self.grid.dim).rev().find(|&a| n[a] > 1) {
+            Some(2) => n[0] * n[1],
+            Some(1) => n[0],
+            _ => 1,
+        }
+    }
+
+    /// Writes the lower band of the operator into `out`: `out[i * (band + 1) + d]` is the
+    /// entry `(i, i − d)` for `d ≤ band` (zero where `i < d`).
+    pub(super) fn fill_lower_band(&self, band: usize, out: &mut [f64]) {
+        let g = self.grid;
+        let w = band + 1;
+        assert_eq!(out.len(), g.len() * w);
+        out.fill(0.0);
+        let stride = [1, g.n[0], g.n[0] * g.n[1]];
+        for cell in 0..g.len() {
+            out[cell * w] = self.diag[cell];
+        }
+        for a in 0..g.dim {
+            assert!(stride[a] <= band || g.n[a] == 1);
+            g.for_each_cell(|i, j, k, cell| {
+                if [i, j, k][a] + 1 < g.n[a] {
+                    out[(cell + stride[a]) * w + stride[a]] = -self.c[a][cell];
+                }
+            });
+        }
+    }
+
     /// Assembles the operator into a CSR matrix.
     pub fn to_csr(&self) -> CsrMatrix {
         let g = self.grid;
@@ -612,6 +696,51 @@ mod tests {
         for (u, v) in x.iter().zip(&exact) {
             assert!((u - v).abs() < 1e-10);
         }
+    }
+
+    #[test]
+    fn face_sigma_overrides_harmonic_mean() {
+        let grid = Grid::new_3d([4, 3, 2], [0.5, 0.7, 1.1]);
+        let sigma: Vec<f64> = pseudo_random(grid.len(), 7)
+            .iter()
+            .map(|v| 1.0 + v)
+            .collect();
+        let bc = BoundaryConditions::dirichlet();
+        let reference = DiffusionOperator::new(grid, bc, &sigma);
+        // Harmonic means given explicitly reproduce the default operator.
+        let stride = [1, 4, 12];
+        let mut face = [
+            vec![0.0; grid.len()],
+            vec![0.0; grid.len()],
+            vec![0.0; grid.len()],
+        ];
+        grid.for_each_cell(|i, j, k, cell| {
+            for a in 0..3 {
+                if [i, j, k][a] + 1 < grid.n[a] {
+                    face[a][cell] = harmonic_mean(sigma[cell], sigma[cell + stride[a]]);
+                }
+            }
+        });
+        let mut op = DiffusionOperator::new(grid, bc, &sigma);
+        op.set_face_sigma([&face[0], &face[1], &face[2]]);
+        assert_eq!(op.diag, reference.diag);
+        assert_eq!(op.c, reference.c);
+
+        // Cutting every x-face at i = 1|2 decouples the two halves under Neumann conditions.
+        face[0].iter_mut().enumerate().for_each(|(c, f)| {
+            if c % 4 == 1 {
+                *f = 0.0;
+            }
+        });
+        let mut op = DiffusionOperator::new(grid, BoundaryConditions::neumann(), &sigma);
+        op.set_face_sigma([&face[0], &face[1], &face[2]]);
+        let left: Vec<f64> = (0..grid.len()).map(|c| f64::from(c % 4 < 2)).collect();
+        let mut y = vec![1.0; grid.len()];
+        op.apply(&left, &mut y);
+        assert!(y.iter().all(|v| v.abs() < 1e-12));
+        op.clear_face_sigma();
+        op.apply(&left, &mut y);
+        assert!(y.iter().any(|v| v.abs() > 0.1));
     }
 
     #[test]

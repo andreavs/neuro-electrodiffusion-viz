@@ -503,3 +503,48 @@ fn bench_64x64x32() {
         }
     }
 }
+
+#[test]
+fn multigrid_with_cut_faces_solves_weakly_coupled_regions() {
+    // An inner box coupled to its surroundings only through weak faces (like a cell
+    // membrane), aligned with the coarse faces so the hierarchy keeps the cut.
+    let grid = Grid::new_3d([32, 16, 16], [0.5; 3]);
+    let n = grid.len();
+    let inside = |i: usize, j: usize, k: usize| {
+        (8..24).contains(&i) && (4..12).contains(&j) && (4..12).contains(&k)
+    };
+    let mut face = [vec![1.0; n], vec![1.0; n], vec![1.0; n]];
+    grid.for_each_cell(|i, j, k, c| {
+        for (a, f) in face.iter_mut().enumerate() {
+            let mut q = [i, j, k];
+            q[a] += 1;
+            if q[a] < grid.n[a] && inside(i, j, k) != inside(q[0], q[1], q[2]) {
+                f[c] = 1e-4;
+            }
+        }
+    });
+    let mut op = DiffusionOperator::uniform(grid, BoundaryConditions::neumann(), 1.0);
+    op.set_face_sigma([&face[0], &face[1], &face[2]]);
+    let mut b: Vec<f64> = (0..n).map(|c| ((c as f64) * 0.37).sin()).collect();
+    ed_core::linalg::remove_mean(&mut b);
+    let opts = CgOptions {
+        rtol: 1e-10,
+        null_space: NullSpace::Constant,
+        ..Default::default()
+    };
+    let mut x = vec![0.0; n];
+    let stats = Pcg::new(n).solve(&op, &mut Multigrid::new(&op), &b, &mut x, &opts);
+    assert!(stats.converged && stats.iterations <= 20, "{stats:?}");
+    let mut ax = vec![0.0; n];
+    op.apply(&x, &mut ax);
+    assert!(max_err(&ax, &b) < 1e-8);
+
+    // Jacobi needs many more iterations.
+    let mut x = vec![0.0; n];
+    let mut jacobi = Jacobi::new(&op);
+    let slow = Pcg::new(n).solve(&op, &mut jacobi, &b, &mut x, &opts);
+    assert!(
+        slow.iterations > 3 * stats.iterations,
+        "{slow:?} vs {stats:?}"
+    );
+}
