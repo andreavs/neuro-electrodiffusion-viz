@@ -14,8 +14,21 @@ export type KnpField = (typeof KNP_FIELDS)[number]['value'];
 /** Order of the values reported per probe (see `KnpSim.probe`). */
 export const PROBE_ORDER: readonly KnpField[] = ['k', 'na', 'ca', 'x', 'phi'];
 
+/** Neuron models; values match the `cell` argument of the `KnpSim` constructor. */
+export const KNP_CELLS = [
+  { value: 'hay', label: 'Hay et al. 2011 (642 compartments)' },
+  { value: 'simple', label: 'Simplified (115 compartments)' },
+] as const;
+
 /** Controls of the tissue-scale simulation; read by both the view and the worker solver. */
 export const KNP_PARAMS = [
+  {
+    kind: 'select',
+    key: 'cell',
+    label: 'Neuron',
+    options: KNP_CELLS.map(({ value, label }) => ({ value, label })),
+    default: 'hay',
+  },
   {
     kind: 'select',
     key: 'field',
@@ -30,9 +43,9 @@ export const KNP_PARAMS = [
     min: 0,
     max: 30_000,
     step: 500,
-    default: 8000,
+    default: 5000,
     unit: 'Hz',
-    help: 'Total rate of excitatory synaptic events on the dendrites (about 2 kHz gives 5 spikes/s)',
+    help: 'Total rate of excitatory synaptic events (about 5 spikes/s at 5 kHz for the Hay cell, 2 kHz for the simplified one)',
   },
   {
     kind: 'number',

@@ -31,6 +31,7 @@ use ed_core::ions::{self, IonSpecies};
 use ed_core::linalg::{Boundary, BoundaryConditions, CgStats, Grid};
 use ed_core::Simulation;
 
+pub mod cell;
 mod diffusion;
 mod electroneutral;
 pub mod fv;

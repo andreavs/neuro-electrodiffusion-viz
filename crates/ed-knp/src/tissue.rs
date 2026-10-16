@@ -1,5 +1,8 @@
 //! A neuron coupled one way to the tissue: its membrane currents are the KNP point sources.
 //!
+//! The neuron is any [`Cell`]: the simplified pyramidal [`Neuron`] (the default) or the
+//! detailed Hay et al. cell ([`HayNeuron`]), whose Ca²⁺ currents go into the Ca²⁺ species.
+//!
 //! Each [`Tissue::step`] advances the neuron over one KNP time step in internal steps of
 //! its own Δt, averages its currents over the interval, deposits them at the compartment
 //! centres and then takes one KNP step. Concentrations seen by the neuron stay fixed, as in
@@ -7,6 +10,8 @@
 //! released as X⁻ at the soma, as from a Ag/AgCl ground, so the net membrane current
 //! still sums to zero.
 
+use crate::cell::Cell;
+use crate::hay::HayNeuron;
 use crate::neuron::Neuron;
 use crate::{KnpConfig, KnpSolver};
 use ed_core::linalg::Boundary;
@@ -55,15 +60,28 @@ impl Default for TissueConfig {
     }
 }
 
-pub struct Tissue {
+impl TissueConfig {
+    /// A 640 × 640 × 1600 µm column (32 × 32 × 80 cells) for the Hay et al. cell, whose
+    /// apical tuft reaches about 1.16 mm above the soma and basal dendrites 0.2 mm below.
+    pub fn hay() -> Self {
+        let mut cfg = Self::default();
+        cfg.knp.n = [32, 32, 80];
+        cfg.knp.size = [640.0, 640.0, 1600.0];
+        cfg.soma = [320.0, 320.0, 260.0];
+        cfg
+    }
+}
+
+pub struct Tissue<C: Cell = Neuron> {
     pub knp: KnpSolver,
-    pub neuron: Neuron,
+    pub neuron: C,
     soma: [f64; 3],
     /// Compartment centres in grid coordinates (µm).
     positions: Vec<[f64; 3]>,
     trace_every: usize,
-    /// Current sums over the step: Na⁺, K⁺, X⁻, capacitive, per compartment.
-    acc: [Vec<f64>; 4],
+    /// Current sums over the step per compartment: Na⁺, K⁺, X⁻, Ca²⁺ (empty for a
+    /// species the cell does not carry), then capacitive.
+    acc: [Vec<f64>; 5],
     /// Somatic (t, V) samples not yet taken.
     trace: Vec<f64>,
     spikes: u64,
@@ -71,11 +89,25 @@ pub struct Tissue {
 }
 
 impl Tissue {
+    /// The default column with the default pyramidal cell.
+    pub fn pyramidal() -> Self {
+        Self::new(&TissueConfig::default(), Neuron::pyramidal())
+    }
+}
+
+impl Tissue<HayNeuron> {
+    /// The Hay et al. cell in [`TissueConfig::hay`].
+    pub fn hay() -> Self {
+        Self::new(&TissueConfig::hay(), HayNeuron::cell1())
+    }
+}
+
+impl<C: Cell> Tissue<C> {
     /// Couples `neuron` to a new KNP solver. Panics if a compartment lies outside the grid.
-    pub fn new(cfg: &TissueConfig, neuron: Neuron) -> Self {
+    pub fn new(cfg: &TissueConfig, neuron: C) -> Self {
         assert!(cfg.trace_every > 0, "trace_every must be positive");
         let mut knp = KnpSolver::new(&cfg.knp);
-        knp.set_dt(whole_steps(cfg.knp.dt, neuron.params().dt));
+        knp.set_dt(whole_steps(cfg.knp.dt, neuron.dt()));
         let positions: Vec<[f64; 3]> = neuron
             .centres()
             .iter()
@@ -89,22 +121,19 @@ impl Tissue {
         }
         let n = neuron.len();
         let above = neuron.v()[0] > SPIKE_THRESHOLD;
+        let carried = neuron.ion_currents().map(|c| !c.is_empty());
+        let acc = std::array::from_fn(|k| vec![0.0; if k == 4 || carried[k] { n } else { 0 }]);
         Self {
             knp,
             soma: cfg.soma,
             positions,
             trace_every: cfg.trace_every,
-            acc: std::array::from_fn(|_| vec![0.0; n]),
+            acc,
             trace: Vec::new(),
             spikes: 0,
             above,
             neuron,
         }
-    }
-
-    /// The default column with the default pyramidal cell.
-    pub fn pyramidal() -> Self {
-        Self::new(&TissueConfig::default(), Neuron::pyramidal())
     }
 
     /// Soma position in grid coordinates, µm.
@@ -130,13 +159,13 @@ impl Tissue {
     /// Sets the KNP time step (ms), rounded to a whole number of neuron steps. Panics
     /// unless `0 < dt <= MAX_DT`.
     pub fn set_dt(&mut self, dt: f64) {
-        let dt = whole_steps(dt, self.neuron.params().dt);
+        let dt = whole_steps(dt, self.neuron.dt());
         self.knp.set_dt(dt);
     }
 
     /// Neuron steps per KNP step.
     fn substeps(&self) -> usize {
-        (self.knp.dt() / self.neuron.params().dt).round().max(1.0) as usize
+        (self.knp.dt() / self.neuron.dt()).round().max(1.0) as usize
     }
 
     fn record(&mut self) {
@@ -163,11 +192,8 @@ impl Tissue {
             self.neuron.step(m);
             let w = m as f64 / total as f64;
             let n = &self.neuron;
-            for (acc, cur) in self
-                .acc
-                .iter_mut()
-                .zip([n.i_na(), n.i_k(), n.i_x(), n.i_cap()])
-            {
+            let [na, k, x, ca] = n.ion_currents();
+            for (acc, cur) in self.acc.iter_mut().zip([na, k, x, ca, n.i_cap()]) {
                 acc.iter_mut().zip(cur).for_each(|(a, &c)| *a += w * c);
             }
             electrode += w * n.electrode_return();
@@ -187,17 +213,19 @@ fn whole_steps(dt: f64, h: f64) -> f64 {
     (dt / h).round().max(1.0) * h
 }
 
-impl Simulation for Tissue {
+impl<C: Cell> Simulation for Tissue<C> {
     fn step(&mut self, n: usize) {
         for _ in 0..n {
             let electrode = self.advance_neuron();
             let s = &mut self.knp;
             s.clear_sources();
             for (c, &p) in self.positions.iter().enumerate() {
-                s.add_ion_current(p, NA, self.acc[0][c]);
-                s.add_ion_current(p, K, self.acc[1][c]);
-                s.add_ion_current(p, X, self.acc[2][c]);
-                s.add_capacitive_current(p, self.acc[3][c]);
+                for k in [NA, K, X, CA] {
+                    if let Some(&i) = self.acc[k].get(c) {
+                        s.add_ion_current(p, k, i);
+                    }
+                }
+                s.add_capacitive_current(p, self.acc[4][c]);
             }
             s.add_ion_current(self.positions[0], X, electrode);
             s.step(1);
@@ -228,7 +256,7 @@ mod tests {
     }
 
     /// Total amount of species `k` in the extracellular space, mM·µm³.
-    fn amount(t: &Tissue, k: usize, porosity: f64) -> f64 {
+    fn amount<C: Cell>(t: &Tissue<C>, k: usize, porosity: f64) -> f64 {
         let h = t.knp.grid().h;
         t.knp.concentration(k).iter().sum::<f64>() * h[0] * h[1] * h[2] * porosity
     }
@@ -311,6 +339,39 @@ mod tests {
     }
 
     #[test]
+    fn hay_cell_fits_its_column_and_releases_calcium() {
+        let mut cfg = TissueConfig::hay();
+        cfg.knp.boundary = Boundary::Neumann;
+        let mut t = Tissue::new(&cfg, HayNeuron::cell1());
+        assert_eq!(t.positions().len(), 642);
+        assert!(t.acc[X].is_empty() && t.acc[CA].len() == 642);
+        t.neuron.i_stim = 1.5;
+        let por = cfg.knp.porosity;
+        let m0: Vec<f64> = (0..4).map(|k| amount(&t, k, por)).collect();
+        let mut q = [0.0; 4];
+        for _ in 0..30 {
+            t.step(1);
+            let net: f64 = t.acc.iter().map(|a| a.iter().sum::<f64>()).sum();
+            assert!((net - t.neuron.i_stim).abs() < 1e-9, "net {net}");
+            for (k, acc) in t.acc[..4].iter().enumerate() {
+                q[k] += acc.iter().sum::<f64>() * t.knp.dt();
+            }
+        }
+        q[X] += -t.neuron.i_stim * t.time_ms();
+        let z = [1.0, 1.0, -1.0, 2.0];
+        for k in 0..4 {
+            let added = amount(&t, k, por) - m0[k];
+            let expected = 1e6 / F * q[k] / z[k];
+            let tol = 1e-12 * m0[k] + 1e-6 * expected.abs();
+            assert!(
+                (added - expected).abs() < tol,
+                "species {k}: {added} vs {expected}"
+            );
+        }
+        assert!(q[CA] < 0.0 && t.spikes() > 0, "spiking cell takes up Ca²⁺");
+    }
+
+    #[test]
     #[should_panic(expected = "KNP time step")]
     fn infinite_dt_is_rejected() {
         Tissue::new(&small(), Neuron::pyramidal()).set_dt(f64::INFINITY);
@@ -323,6 +384,19 @@ mod tests {
     fn tissue_step_time() {
         let mut t = Tissue::pyramidal();
         t.neuron.syn_rate_hz = 8000.0;
+        t.step(20);
+        let start = std::time::Instant::now();
+        t.step(100);
+        let ms = start.elapsed().as_secs_f64() * 10.0;
+        println!("{ms:.2} ms per 1 ms step, {} spikes", t.spikes());
+    }
+
+    /// `cargo test --release -p ed-knp hay_tissue_step_time -- --ignored --nocapture`.
+    #[test]
+    #[ignore]
+    fn hay_tissue_step_time() {
+        let mut t = Tissue::hay();
+        t.neuron.syn_rate_hz = 5000.0;
         t.step(20);
         let start = std::time::Instant::now();
         t.step(100);
