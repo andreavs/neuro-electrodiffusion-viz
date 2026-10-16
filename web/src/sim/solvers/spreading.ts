@@ -25,6 +25,19 @@ export interface SdWasm {
 
 export type SdCreate = (seed: number, neurons: number, gNap: number) => SdWasm;
 
+/**
+ * Counts builds across all adapters, so a view sees a new generation after a reset or a new
+ * `create` as well as after a rebuild.
+ */
+let builds = 0;
+
+/** wasm-bindgen wraps negative or fractional numbers for `usize`; reject them here. */
+function count(name: string, v: unknown): number {
+  const n = Number(v);
+  if (!Number.isInteger(n) || n < 0) throw new Error(`${name} must be a whole number ≥ 0, got ${String(v)}`);
+  return n;
+}
+
 /** Worker-side adapter around the wasm spreading-depression tissue. */
 export function makeSpreadingSolver(
   initial: Params,
@@ -32,26 +45,38 @@ export function makeSpreadingSolver(
   now: () => number = () => performance.now(),
 ): WorkerSolver {
   const params: Params = { ...defaultParams(SD_PARAMS), ...initial };
-  let sim: SdWasm;
-  /** Bumped on every rebuild, so the view knows when the neurons moved. */
+  let sim: SdWasm | undefined;
+  /** Changes on every build, so the view knows when the neurons moved. */
   let generation = 0;
-  let geometrySent = false;
+  let somataSent = false;
+  let drivenSent = false;
   let steps = 0;
   let msPerStep = 0;
 
-  const applyRuntime = (p: Params) => {
-    if ('driven' in p || 'drive' in p) sim.set_drive(Number(params.driven), Number(params.drive));
-    if ('pump' in p) sim.set_pump(Number(p.pump));
-    if ('buffering' in p) sim.set_buffering(Number(p.buffering) / 1000); // 1/s → 1/ms
+  /** Applies the run-time parameters among the keys of `p` (values from `params`) to `s`. */
+  const applyRuntime = (s: SdWasm, p: Params) => {
+    if ('driven' in p || 'drive' in p) {
+      s.set_drive(count('driven neurons', params.driven), Number(params.drive));
+      drivenSent = false;
+    }
+    if ('pump' in p) s.set_pump(Number(params.pump));
+    if ('buffering' in p) s.set_buffering(Number(params.buffering) / 1000); // 1/s → 1/ms
   };
+  /** Builds a new tissue; the old one is kept if that fails. */
   const build = () => {
-    const next = create(1, Number(params.neurons), Number(params.gNap));
+    const next = create(1, count('neurons', params.neurons), Number(params.gNap));
+    try {
+      applyRuntime(next, params);
+    } catch (err) {
+      next.free();
+      throw err;
+    }
     sim?.free();
     sim = next;
-    generation++;
-    geometrySent = false;
+    generation = ++builds;
+    somataSent = drivenSent = false;
+    steps = 0;
     msPerStep = 0;
-    applyRuntime(params);
   };
 
   /** Applies `p`; a rejected value throws and is not kept. */
@@ -61,16 +86,18 @@ export function makeSpreadingSolver(
     Object.assign(params, p);
     try {
       if (SD_REBUILD_KEYS.some((k) => k in p && p[k] !== old[k])) build();
-      else applyRuntime(p);
+      else applyRuntime(sim!, p);
     } catch (err) {
       Object.assign(params, old);
       throw err;
     }
   };
   build();
+  const live = () => sim!;
 
   return {
     advance(budgetMs) {
+      const sim = live();
       const t0 = now();
       let taken = 0;
       do {
@@ -83,6 +110,7 @@ export function makeSpreadingSolver(
       return true;
     },
     frame(): SolverFrame {
+      const sim = live();
       const [nx, ny, nz] = sim.shape();
       const [sx, sy, sz] = sim.size();
       const v = sim.v_soma();
@@ -90,12 +118,16 @@ export function makeSpreadingSolver(
         { name: String(params.field), shape: [nx!, ny!, nz!], data: sim.field(String(params.field)) },
         { name: 'v', shape: [v.length], data: v },
       ];
-      if (!geometrySent) {
+      // Positions only change with a build, the driven set with the drive.
+      if (!somataSent) {
         const somata = sim.somata();
-        const driven = Float32Array.from(sim.driven());
         fields.push({ name: 'somata', shape: [somata.length / 3, 3], data: somata });
+        somataSent = true;
+      }
+      if (!drivenSent) {
+        const driven = Float32Array.from(sim.driven());
         fields.push({ name: 'driven', shape: [driven.length], data: driven });
-        geometrySent = true;
+        drivenSent = true;
       }
       return {
         timeMs: sim.time_ms(),
@@ -112,13 +144,9 @@ export function makeSpreadingSolver(
         },
       };
     },
-    setParams(p) {
-      apply(p);
-      // A new drive selects other neurons; resend them.
-      if ('driven' in p) geometrySent = false;
-    },
+    setParams: apply,
     dispose() {
-      sim.free();
+      live().free();
     },
   };
 }

@@ -8,12 +8,21 @@ class FakeSd implements SdWasm {
   calls: string[] = [];
   n = 0;
   freed = false;
+  /** Makes `set_pump` reject its value, as the wasm range check does. */
+  static badPump = false;
   constructor(
     readonly neurons: number,
     readonly gNap: number,
   ) {}
-  set_drive = (count: number, g: number) => void this.calls.push(`drive ${count} ${g}`);
-  set_pump = (s: number) => void this.calls.push(`pump ${s}`);
+  drivenCount = 0;
+  set_drive = (count: number, g: number) => {
+    this.drivenCount = count;
+    this.calls.push(`drive ${count} ${g}`);
+  };
+  set_pump = (s: number) => {
+    if (FakeSd.badPump) throw new Error('pump out of range');
+    this.calls.push(`pump ${s}`);
+  };
   set_buffering = (r: number) => void this.calls.push(`buffering ${r}`);
   step = (k: number) => void ((this.n += k), (clock.t += 5 * k));
   dt = () => 4;
@@ -25,7 +34,7 @@ class FakeSd implements SdWasm {
   field = (name: string) => new Float32Array(4).fill(name === 'k' ? 3 : 0);
   somata = () => new Float32Array(3 * this.neurons);
   v_soma = () => new Float32Array(this.neurons).fill(-65);
-  driven = () => Uint32Array.of(0);
+  driven = () => Uint32Array.from({ length: this.drivenCount }, (_, i) => i);
   free = () => void (this.freed = true);
 }
 
@@ -56,16 +65,43 @@ describe('spreading-depression solver adapter', () => {
     expect(s2[0]!.calls.at(-1)).toBe('buffering 0.002');
   });
 
-  it('sends the neuron positions once per build and after the drive changes', () => {
-    const { solver } = setup();
+  it('sends the positions once per build and the driven cells after each drive change', () => {
+    const { solver, sims } = setup();
     solver.advance(10);
     const first = solver.frame();
     expect(names(first)).toEqual(['k', 'v', 'somata', 'driven']);
     expect(first.fields[2]!.shape).toEqual([3, 3]);
-    expect(first.stats).toMatchObject({ generation: 1, depolarised: 0.5, sizeZ: 200 });
+    expect(first.stats).toMatchObject({ depolarised: 0.5, sizeZ: 200 });
     expect(names(solver.frame())).toEqual(['k', 'v']);
-    solver.setParams({ driven: 5 });
-    expect(names(solver.frame())).toContain('somata');
+    solver.setParams({ driven: 2 });
+    expect(sims[0]!.calls.at(-1)).toBe('drive 2 20');
+    const next = solver.frame();
+    expect(names(next)).toEqual(['k', 'v', 'driven']);
+    expect([...next.fields[2]!.data]).toEqual([0, 1]);
+  });
+
+  it('rejects counts that wasm would wrap', () => {
+    const { solver } = setup();
+    expect(() => solver.setParams({ driven: -1 })).toThrow();
+    expect(() => solver.setParams({ neurons: 2.5 })).toThrow();
+  });
+
+  it('keeps the old tissue and parameters when a rebuild fails', () => {
+    const { solver, sims } = setup();
+    const gen = solver.frame().stats!.generation;
+    FakeSd.badPump = true;
+    try {
+      expect(() => solver.setParams({ gNap: 0.1, pump: 5 })).toThrow();
+    } finally {
+      FakeSd.badPump = false;
+    }
+    expect(sims).toHaveLength(2);
+    expect(sims[1]!.freed).toBe(true);
+    expect(sims[0]!.freed).toBe(false);
+    // The failed build changed nothing: the next rebuild still starts from the old gNap.
+    solver.setParams({ neurons: 4 });
+    expect(sims[2]!.gNap).toBe(0.25);
+    expect(solver.frame().stats!.generation).toBeGreaterThan(gen as number);
   });
 
   it('rebuilds (and frees the old tissue) only for parameters that fix the rest state', () => {
@@ -77,7 +113,9 @@ describe('spreading-depression solver adapter', () => {
     expect(sims[0]!.freed).toBe(true);
     expect(sims[1]!.gNap).toBe(0.1);
     expect(sims[1]!.calls).toContain('pump 1.5');
-    expect(solver.frame().stats!.generation).toBe(2);
+    const { solver: other } = setup();
+    // Generations are unique across adapters, so a new `create` also reads as a rebuild.
+    expect(new Set([solver.frame().stats!.generation, other.frame().stats!.generation]).size).toBe(2);
   });
 
   it('rejects an unknown field and keeps the old one', () => {
