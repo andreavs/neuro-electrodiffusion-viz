@@ -38,6 +38,7 @@ pub mod hay;
 pub mod neuron;
 pub mod population;
 mod sources;
+pub mod spreading;
 pub mod tissue;
 
 use diffusion::Diffusion;
