@@ -12,6 +12,7 @@
 pub mod constants;
 pub mod ions;
 pub mod linalg;
+pub mod membrane;
 
 /// Common interface implemented by every scale's simulator so the WASM layer
 /// and the browser worker can drive them uniformly.
