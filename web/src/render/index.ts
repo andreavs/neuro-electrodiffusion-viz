@@ -7,6 +7,7 @@ export { ExpandingRange, autoRange, restRange, type Range } from './range';
 export { extractSlice, sliceDims, fieldIndex, type Axis, type Shape3 } from './field';
 export { SlicePlane, type SliceOptions } from './slice';
 export { SurfaceField } from './surface';
+export { FlowTracers, type FlowOptions } from './flow';
 export { VolumeField, type VolumeLook, type VolumeOptions } from './volume';
 export { PointCloud, type PointCloudOptions } from './points';
 export { Colorbar, type ColorbarOptions } from './colorbar';
