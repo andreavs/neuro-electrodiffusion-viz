@@ -2,7 +2,7 @@
 export { createScene, type SceneHandle, type SceneOptions } from './scene';
 export { viridis, coolwarm, sampleColormap, colormapGradient, LUT_SIZE, type Colormap } from './colormap';
 export { createColormapTexture, setRange, setColormap, disposeObject, disposeMaterial } from './gpu';
-export { autoRange, type Range } from './range';
+export { ExpandingRange, autoRange, type Range } from './range';
 export { extractSlice, sliceDims, fieldIndex, type Axis, type Shape3 } from './field';
 export { SlicePlane, type SliceOptions } from './slice';
 export { SurfaceField } from './surface';

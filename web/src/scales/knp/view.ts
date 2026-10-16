@@ -269,6 +269,7 @@ export function createKnpView(): ScaleView {
         if (frame.timeMs < lastTime) {
           somaPlot.clear();
           probePlot?.clear();
+          colorbar?.resetAuto();
         }
         lastTime = frame.timeMs;
 
