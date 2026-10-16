@@ -36,10 +36,10 @@ export interface SceneHandle {
   /**
    * Turn bloom post-processing on (rendering into an HDR, multisampled buffer)
    * or off (`null`, plain rendering straight to the canvas). Stays off on GPUs
-   * that cannot render to float buffers.
+   * that cannot render to float buffers and on software renderers.
    */
   setBloom(opts: BloomOptions | null): void;
-  /** Clear colour; `null` makes the canvas transparent. */
+  /** Backdrop: a soft vignette around this colour; `null` makes the canvas transparent. */
   setBackground(color: THREE.ColorRepresentation | null): void;
   /** Render once (controls are updated first). */
   render(): void;
@@ -99,8 +99,10 @@ export function createScene(canvas: HTMLCanvasElement, opts: SceneOptions = {}):
     composer.setSize(Math.max(1, canvas.clientWidth), Math.max(1, canvas.clientHeight));
   };
   // Bloom renders into half-float targets; without float colour buffers it would draw nothing.
-  const hdrTargets =
-    renderer.extensions.has('EXT_color_buffer_float') || renderer.extensions.has('EXT_color_buffer_half_float');
+  // Software renderers (SwiftShader, llvmpipe) can, but take seconds per bloomed frame.
+  const bloomable =
+    (renderer.extensions.has('EXT_color_buffer_float') || renderer.extensions.has('EXT_color_buffer_half_float')) &&
+    !isSoftwareRenderer(renderer);
 
   const resize = () => {
     const w = Math.max(1, canvas.clientWidth);
@@ -148,7 +150,7 @@ export function createScene(canvas: HTMLCanvasElement, opts: SceneOptions = {}):
       controls.update();
     },
     setBloom(opts) {
-      if (!opts || !hdrTargets) {
+      if (!opts || !bloomable) {
         composer?.passes.forEach((p) => p.dispose());
         composer?.dispose();
         composer = null;
@@ -176,7 +178,8 @@ export function createScene(canvas: HTMLCanvasElement, opts: SceneOptions = {}):
       // Also as the scene background: the bloom passes clear with their own colour.
       if (color == null) renderer.setClearColor(0x000000, 0);
       else renderer.setClearColor(color, 1);
-      scene.background = color == null ? null : new THREE.Color(color);
+      if (scene.background instanceof THREE.Texture) scene.background.dispose();
+      scene.background = color == null ? null : vignette(new THREE.Color(color));
       if (raf === 0 && !disposed) render();
     },
     render,
@@ -206,6 +209,7 @@ export function createScene(canvas: HTMLCanvasElement, opts: SceneOptions = {}):
       dprQuery?.removeEventListener('change', onDprChange);
       controls.dispose();
       handle.setBloom(null);
+      if (scene.background instanceof THREE.Texture) scene.background.dispose();
       disposeObject(scene);
       scene.clear();
       renderer.dispose();
@@ -214,4 +218,28 @@ export function createScene(canvas: HTMLCanvasElement, opts: SceneOptions = {}):
     },
   };
   return handle;
+}
+
+/** A radial backdrop texture: `color` at the rim, slightly lifted towards the centre. */
+function vignette(color: THREE.Color): THREE.Texture {
+  const c = document.createElement('canvas');
+  c.width = c.height = 128;
+  const ctx = c.getContext('2d')!;
+  const css = (k: number) => `#${color.clone().lerp(new THREE.Color(0x3a4060), k).getHexString()}`;
+  const g = ctx.createRadialGradient(64, 54, 0, 64, 64, 90);
+  g.addColorStop(0, css(0.22));
+  g.addColorStop(1, css(0));
+  ctx.fillStyle = g;
+  ctx.fillRect(0, 0, 128, 128);
+  const tex = new THREE.CanvasTexture(c);
+  tex.colorSpace = THREE.SRGBColorSpace;
+  return tex;
+}
+
+/** True for CPU-emulated WebGL, where full-screen post-processing is far too slow. */
+function isSoftwareRenderer(renderer: THREE.WebGLRenderer): boolean {
+  const gl = renderer.getContext();
+  const info = gl.getExtension('WEBGL_debug_renderer_info');
+  const name = String(info ? gl.getParameter(info.UNMASKED_RENDERER_WEBGL) : gl.getParameter(gl.RENDERER));
+  return /swiftshader|llvmpipe|softpipe|software/i.test(name);
 }
