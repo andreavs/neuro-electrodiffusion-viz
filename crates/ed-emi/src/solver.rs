@@ -26,7 +26,7 @@ use ed_core::ions::{IonSpecies, CL, K, NA};
 use ed_core::linalg::{CgOptions, CgStats, CsrMatrix, NullSpace, Pcg, TwoLevel};
 use ed_core::membrane::{IonConcentrations, MembraneParams, MembranePatches};
 
-use crate::fem::{plane_aggregates, solve_increment, Stiffness};
+use crate::fem::{aggregates, solve_increment, Stiffness};
 use crate::mesh::Mesh;
 
 /// µA/cm² carried by a flux of 1 mM·µm/ms of a monovalent ion.
@@ -179,7 +179,7 @@ impl EmiSolver {
         }
         let stiffness = Stiffness::new(&mesh);
         let n_tets = mesh.tets.len();
-        let agg = plane_aggregates(&mesh);
+        let agg = aggregates(&mesh);
         let mut a_phi = stiffness.new_matrix();
         stiffness.assemble(
             &vec![1.0; n_tets],
@@ -234,12 +234,26 @@ impl EmiSolver {
     /// Opens a synapse (`g` mS/cm², onset `t0` ms) on the membrane of `cell` (tag ≥ 1) where
     /// `x_lo ≤ x ≤ x_hi`.
     pub fn stimulate(&mut self, cell: u16, x_lo: f64, x_hi: f64, g: f64, t0: f64) {
+        self.stimulate_where(cell, |p| p[0] >= x_lo && p[0] <= x_hi, g, t0);
+    }
+
+    /// Opens a synapse (`g` mS/cm², onset `t0` ms) on every membrane node of `cell` (tag ≥ 1)
+    /// whose position (µm) satisfies `inside`. Returns how many nodes it opened.
+    pub fn stimulate_where(
+        &mut self,
+        cell: u16,
+        inside: impl Fn([f64; 3]) -> bool,
+        g: f64,
+        t0: f64,
+    ) -> usize {
+        let mut n = 0;
         for (p, m) in self.mesh.membrane.iter().enumerate() {
-            let x = self.mesh.dof_position(m.inner as usize)[0];
-            if m.cell == cell && x >= x_lo && x <= x_hi {
+            if m.cell == cell && inside(self.mesh.dof_position(m.inner as usize)) {
                 self.patches.set_synapse(p, g, t0);
+                n += 1;
             }
         }
+        n
     }
 
     pub fn mesh(&self) -> &Mesh {

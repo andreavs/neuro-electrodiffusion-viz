@@ -373,7 +373,7 @@ impl Mesh {
         let mut vertex_inner = vec![NONE; n_vertices];
         let mut dof_vertex = Vec::new();
         let mut dof_tag = Vec::new();
-        for v in 0..n_vertices {
+        for v in cuthill_mckee(n_vertices, tets) {
             if uses_outer[v] {
                 vertex_outer[v] = dof_vertex.len() as u32;
                 dof_vertex.push(v as u32);
@@ -519,6 +519,53 @@ impl Mesh {
         }
         (lo, hi)
     }
+}
+
+/// Reverse Cuthill-McKee order of the vertices of `tets` (each component from a
+/// minimum-degree vertex), so neighbouring DOFs sit close in memory.
+fn cuthill_mckee(n: usize, tets: &[[u32; 4]]) -> Vec<usize> {
+    let mut adj: Vec<Vec<u32>> = vec![Vec::new(); n];
+    for tet in tets {
+        for a in 0..4 {
+            for b in 0..4 {
+                if a != b {
+                    adj[tet[a] as usize].push(tet[b]);
+                }
+            }
+        }
+    }
+    for l in &mut adj {
+        l.sort_unstable();
+        l.dedup();
+    }
+    let mut by_degree: Vec<usize> = (0..n).collect();
+    by_degree.sort_by_key(|&v| adj[v].len());
+    let mut seen = vec![false; n];
+    let mut order = Vec::with_capacity(n);
+    for &start in &by_degree {
+        if seen[start] {
+            continue;
+        }
+        seen[start] = true;
+        let mut head = order.len();
+        order.push(start);
+        while head < order.len() {
+            let v = order[head];
+            head += 1;
+            let mut next: Vec<usize> = adj[v]
+                .iter()
+                .map(|&u| u as usize)
+                .filter(|&u| !seen[u])
+                .collect();
+            next.sort_by_key(|&u| adj[u].len());
+            for u in next {
+                seen[u] = true;
+                order.push(u);
+            }
+        }
+    }
+    order.reverse();
+    order
 }
 
 #[cfg(test)]

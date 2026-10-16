@@ -169,11 +169,18 @@ impl Stiffness {
     }
 }
 
-/// Aggregates for [`ed_core::linalg::TwoLevel`]: one per (x-plane, subdomain), numbered
-/// plane by plane. Panics without a grid (graph aggregation for other meshes is part 2 of
-/// #63).
-pub fn plane_aggregates(mesh: &Mesh) -> Vec<u32> {
-    let nx = mesh.grid.as_ref().expect("a grid mesh").axes[0].len();
+/// Aggregates for [`ed_core::linalg::TwoLevel`]. Grid meshes use one aggregate per
+/// (x-plane, subdomain), numbered plane by plane, which suits long axons along x. Other
+/// meshes use greedy graph aggregation: each aggregate is a DOF and its neighbours in the
+/// same subdomain, numbered in DOF order so the coarse matrix stays narrow-banded.
+pub fn aggregates(mesh: &Mesh) -> Vec<u32> {
+    match &mesh.grid {
+        Some(g) => plane_aggregates(mesh, g.axes[0].len()),
+        None => graph_aggregates(mesh),
+    }
+}
+
+fn plane_aggregates(mesh: &Mesh, nx: usize) -> Vec<u32> {
     let stride = mesh.n_cells as u32 + 1;
     let mut agg: Vec<u32> = (0..mesh.n_dofs())
         .map(|d| (mesh.dof_vertex[d] % nx as u32) * stride + mesh.dof_tag[d] as u32)
@@ -187,6 +194,44 @@ pub fn plane_aggregates(mesh: &Mesh) -> Vec<u32> {
         map[g as usize] = i as u32;
     }
     agg.iter_mut().for_each(|g| *g = map[*g as usize]);
+    agg
+}
+
+fn graph_aggregates(mesh: &Mesh) -> Vec<u32> {
+    let n = mesh.n_dofs();
+    // Tets never mix subdomains, so tet neighbours share the DOF's subdomain.
+    let mut adj: Vec<Vec<u32>> = vec![Vec::new(); n];
+    for tet in &mesh.tets {
+        for &a in tet {
+            adj[a as usize].extend(tet.iter().filter(|&&b| b != a));
+        }
+    }
+    for l in &mut adj {
+        l.sort_unstable();
+        l.dedup();
+    }
+    let mut agg = vec![u32::MAX; n];
+    let mut n_agg = 0;
+    // Seeds: DOFs whose whole neighbourhood is still free.
+    for d in 0..n {
+        if agg[d] == u32::MAX && adj[d].iter().all(|&u| agg[u as usize] == u32::MAX) {
+            agg[d] = n_agg;
+            adj[d].iter().for_each(|&u| agg[u as usize] = n_agg);
+            n_agg += 1;
+        }
+    }
+    // Leftovers join the aggregate of an aggregated neighbour, or start their own.
+    for d in 0..n {
+        if agg[d] == u32::MAX {
+            agg[d] = match adj[d].iter().find(|&&u| agg[u as usize] != u32::MAX) {
+                Some(&u) => agg[u as usize],
+                None => {
+                    n_agg += 1;
+                    n_agg - 1
+                }
+            };
+        }
+    }
     agg
 }
 
@@ -238,6 +283,32 @@ mod tests {
         for row in s {
             assert!(row.iter().sum::<f64>().abs() < 1e-12);
         }
+    }
+
+    #[test]
+    fn graph_aggregates_stay_in_one_subdomain_and_are_all_used() {
+        let grid = Mesh::build(&MeshSpec {
+            extent: [2.0, 1.0, 1.0],
+            cells: vec![Aabb::new([0.5, 0.25, 0.25], [1.5, 0.75, 0.75])],
+            max_h: [0.125; 3],
+        })
+        .unwrap();
+        let tets: Vec<[u32; 4]> = grid
+            .tets
+            .iter()
+            .map(|t| t.map(|d| grid.dof_vertex[d as usize]))
+            .collect();
+        let mesh = Mesh::from_tets(grid.points.clone(), &tets, grid.tet_tag.clone(), 1).unwrap();
+        let agg = aggregates(&mesh);
+        let n_agg = *agg.iter().max().unwrap() as usize + 1;
+        let mut tag = vec![None; n_agg];
+        for (d, &g) in agg.iter().enumerate() {
+            let t = tag[g as usize].get_or_insert(mesh.dof_tag[d]);
+            assert_eq!(*t, mesh.dof_tag[d]);
+        }
+        assert!(tag.iter().all(Option::is_some));
+        // Aggregates are a DOF and its neighbours: far fewer than DOFs.
+        assert!(n_agg * 8 < mesh.n_dofs(), "{n_agg} of {}", mesh.n_dofs());
     }
 
     #[test]
