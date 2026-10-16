@@ -13,8 +13,12 @@ export interface SolverFrame {
  * scale's wasm-bindgen struct; one lives in `solvers/<scale>.ts`.
  */
 export interface WorkerSolver {
-  /** Advance the simulation, spending at most about `budgetMs` of wall-clock time. */
-  advance(budgetMs: number): void;
+  /**
+   * Advance the simulation, spending at most about `budgetMs` of wall-clock time. Return
+   * `false` when nothing changed (e.g. the run has finished): the loop then idles until the
+   * next parameter change or action instead of re-posting the same frame.
+   */
+  advance(budgetMs: number): void | boolean;
   /** Snapshot of the fields to render. Arrays must be fresh copies (they are transferred). */
   frame(): SolverFrame;
   /** Apply changed parameters (only the keys that changed are passed). */
