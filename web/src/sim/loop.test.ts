@@ -273,4 +273,21 @@ describe('RunLoop', () => {
     loop.handle({ type: 'setParams', params: { dt: 0.3 } });
     expect(host.lastFrame()).toMatchObject({ seq: 1 });
   });
+
+  it('idles without posting once the solver reports nothing changed, and resumes on setParams', () => {
+    loop.handle({ type: 'create', scale: 'particles', params: {} });
+    loop.handle({ type: 'run', running: true });
+    loop.handle({ type: 'ack', seq: host.lastFrame().seq });
+    solvers[0]!.finished = true;
+    host.runTasks();
+    const posted = host.frames().length;
+    loop.handle({ type: 'ack', seq: host.lastFrame().seq });
+    host.runTasks();
+    expect(host.frames()).toHaveLength(posted);
+    expect(host.pendingTasks).toBe(0);
+    solvers[0]!.finished = false;
+    loop.handle({ type: 'setParams', params: { dt: 0.2 } });
+    expect(host.frames()).toHaveLength(posted + 1);
+    expect(host.pendingTasks).toBe(1);
+  });
 });

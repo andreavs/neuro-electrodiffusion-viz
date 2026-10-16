@@ -85,15 +85,13 @@ export class RunLoop {
           Object.assign(this.params, msg.params);
           if (this.solver) {
             this.solver.setParams(msg.params);
-            this.dirty = true;
-            this.flush();
+            this.restarted();
           }
           break;
         case 'action':
           if (this.solver?.action) {
             this.solver.action(msg.name);
-            this.dirty = true;
-            this.flush();
+            this.restarted();
           }
           break;
         case 'setBudget':
@@ -166,9 +164,11 @@ export class RunLoop {
     if (this.awaitingAck && this.ticksAhead >= this.maxTicksAhead) return;
     try {
       const t0 = this.host.now();
-      this.solver.advance(this.budgetMs);
+      const changed = this.solver.advance(this.budgetMs);
       const spent = this.host.now() - t0;
       this.solverMs = this.solverMs === 0 ? spent : 0.9 * this.solverMs + 0.1 * spent;
+      // Finished: idle until a parameter change or action (see `restarted`).
+      if (changed === false) return;
       this.dirty = true;
       if (this.awaitingAck) this.ticksAhead++;
       this.flush();
@@ -219,6 +219,17 @@ export class RunLoop {
       simMsPerSec: r.simMsPerSec,
       solverMs: this.solverMs,
     };
+  }
+
+  /**
+   * After a parameter change or action the solver may have restarted its clock and step
+   * count, so restart the rate window, publish the new state and resume ticking if idle.
+   */
+  private restarted(): void {
+    this.resetRates();
+    this.dirty = true;
+    this.flush();
+    if (this.running) this.scheduleTick();
   }
 
   private resetRates(): void {
