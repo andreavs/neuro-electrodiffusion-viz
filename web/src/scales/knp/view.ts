@@ -1,6 +1,7 @@
 import * as THREE from 'three';
 import {
   Colorbar,
+  FlowTracers,
   SlicePlane,
   SurfaceField,
   TimeSeriesPlot,
@@ -142,6 +143,7 @@ export function createKnpView(): ScaleView {
       let shape: Vec3 = [1, 1, 1];
       let slices: Partial<Record<Axis, SlicePlane>> = {};
       let volume: VolumeField | null = null;
+      let flow: FlowTracers | null = null;
       let box: THREE.LineSegments<THREE.EdgesGeometry, THREE.LineBasicMaterial> | null = null;
       let style: RenderStyle = 'classic';
       let restSample = new Float32Array(0);
@@ -179,6 +181,10 @@ export function createKnpView(): ScaleView {
         if (volume) {
           setColormap(volume, cm);
           volume.setMode(cm.diverging ? 'diverging' : 'sequential');
+        }
+        if (flow) {
+          setColormap(flow, cm);
+          flow.reset();
         }
       };
 
@@ -234,7 +240,12 @@ export function createKnpView(): ScaleView {
             const rest = shownField === 'phi' || finite === 0 ? 0 : restSample.sort()[finite >> 1]!;
             data = restRange(lastField, sourceMask, rest, REST_QUANTILE, REST_STRIDE, restSample);
           }
-          setRange(volume, colorbar.update(data));
+          const range = colorbar.update(data);
+          setRange(volume, range);
+          if (flow) {
+            flow.setField(lastField);
+            setRange(flow, range);
+          }
           return;
         }
         const shown = Object.values(slices).filter((s) => s.mesh.visible);
@@ -265,6 +276,11 @@ export function createKnpView(): ScaleView {
         paintSlices(); // also while paused, when no frame will arrive
       };
 
+      /** Per animation frame: stream the glow tracers (they keep moving while paused). */
+      const onFrame = (dtMs: number) => {
+        if (glow()) flow?.step(dtMs / 1000);
+      };
+
       const applyStyle = (next: RenderStyle) => {
         const changed = next !== style;
         style = next;
@@ -273,6 +289,7 @@ export function createKnpView(): ScaleView {
         q<HTMLElement>('[data-view="slices"]').parentElement!.hidden = glow();
         neuron?.setGlow(glow());
         if (volume) volume.mesh.visible = glow();
+        if (flow) flow.lines.visible = glow();
         if (box) box.material.opacity = glow() ? 0.25 : 1;
         if (changed && shownField) rebuildColorbar(shownField);
         if (size) layoutSlices();
@@ -315,6 +332,9 @@ export function createKnpView(): ScaleView {
         });
         view.scene.add(volume.mesh);
         built.push(volume.mesh);
+        flow = new FlowTracers({ shape, extent, colormap: colormapFor(shownField) });
+        view.scene.add(flow.lines);
+        built.push(flow.lines);
         sourceMask = new Uint8Array(shape[0] * shape[1] * shape[2]);
         for (let c = 0; 7 * c + 6 < comps.length; c++) {
           const cell = [0, 1, 2].map((a) =>
@@ -348,6 +368,7 @@ export function createKnpView(): ScaleView {
         neuron = null;
         volume = null;
         box = null;
+        flow = null;
         lastField = null; // sized for the old grid
         size = null;
       };
@@ -370,6 +391,7 @@ export function createKnpView(): ScaleView {
           probePlot?.clear();
           colorbar?.resetAuto();
           restFrames = 0;
+          flow?.reset();
         }
         lastTime = frame.timeMs;
 
@@ -421,7 +443,7 @@ export function createKnpView(): ScaleView {
       showNeuron.addEventListener('change', () => neuron && (neuron.mesh.visible = showNeuron.checked));
 
       stopStyle = watchRenderStyle(applyStyle);
-      view.start();
+      view.start(onFrame);
       try {
         await client.ready();
       } catch (err) {
@@ -430,7 +452,7 @@ export function createKnpView(): ScaleView {
       }
       if (disposed) return;
       startRenderLoop(client, { draw, stats: panel });
-      view.start();
+      view.start(onFrame);
       client.create('knp', panel.params());
       panel.setRunning(true);
     },
