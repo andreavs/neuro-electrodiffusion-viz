@@ -1,0 +1,20 @@
+{
+  "label": "Neuron",
+  "description": "A stylised pyramidal neuron (soma 12 µm across, apical and basal dendrites, axon) in a box with 4 µm of extracellular space around it.",
+  "stimuli": [
+    {"key": "apical", "label": "Apical dendrite tip", "cell": 1, "centre": [0.0, 0.0, 70.5], "radius": 8.0, "g": 4.0},
+    {"key": "basal", "label": "Basal dendrite tip", "cell": 1, "centre": [32.7289, 12.2734, -20.4556], "radius": 8.0, "g": 4.0},
+    {"key": "soma", "label": "Soma", "cell": 1, "centre": [0.0, 0.0, 0.0], "radius": 6.5, "g": 2.0}
+  ],
+  "probes": [
+    {"label": "Soma", "centre": [0.0, 0.0, 0.0], "radius": 6.5},
+    {"label": "Apical tip", "centre": [0.0, 0.0, 70.5], "radius": 5.0},
+    {"label": "Basal tip", "centre": [32.7289, 12.2734, -20.4556], "radius": 5.0},
+    {"label": "Axon", "centre": [0.0, 0.0, -50.5], "radius": 5.0}
+  ],
+  "file": "neuron.edmesh",
+  "extent": {"lo": [-41.1696, -45.7657, -59.85], "hi": [41.1696, 45.7657, 80.1]},
+  "points": 5595,
+  "tets": 30768,
+  "gmsh": "4.15.2"
+}

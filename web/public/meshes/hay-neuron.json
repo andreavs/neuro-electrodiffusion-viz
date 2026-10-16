@@ -1,0 +1,20 @@
+{
+  "label": "Reconstructed neuron",
+  "description": "The soma and proximal dendrites of a reconstructed layer 5b pyramidal cell (Hay et al. 2011, ModelDB 139653), the morphology used at the tissue scale. Dendrites are cut and sealed at the edges of the 60 µm box; branches thinner than 0.8 µm are left out.",
+  "stimuli": [
+    {"key": "apical", "label": "Apical trunk", "cell": 1, "centre": [-5.4037, 1.8764, 23.8444], "radius": 6.0, "g": 4.0},
+    {"key": "basal", "label": "Basal dendrite", "cell": 1, "centre": [21.1692, 1.7418, 2.9652], "radius": 8.0, "g": 10.0},
+    {"key": "soma", "label": "Soma", "cell": 1, "centre": [0.0, 0.0, 0.0], "radius": 12.0, "g": 2.0}
+  ],
+  "probes": [
+    {"label": "Soma", "centre": [0.0, 0.0, 0.0], "radius": 12.0},
+    {"label": "Apical trunk", "centre": [-5.4037, 1.8764, 23.8444], "radius": 4.0},
+    {"label": "Basal dendrite", "centre": [21.1692, 1.7418, 2.9652], "radius": 4.0},
+    {"label": "Axon", "centre": [0.0, 0.0, -23.9439], "radius": 4.0}
+  ],
+  "file": "hay-neuron.edmesh",
+  "extent": {"lo": [-30.0, -30.0, -30.0], "hi": [30.0, 30.0, 30.0]},
+  "points": 3877,
+  "tets": 19882,
+  "gmsh": "4.15.2"
+}
