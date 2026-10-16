@@ -6,7 +6,8 @@
 //! - [`Pcg`]: preconditioned conjugate gradients with preallocated work vectors, warm
 //!   starts and support for the singular pure-Neumann case.
 //! - [`Jacobi`] and [`Multigrid`]: preconditioners. The geometric multigrid V-cycle is
-//!   the fast option for structured grids.
+//!   the fast option for structured grids. [`TwoLevel`] (aggregation coarse space plus
+//!   Gauss-Seidel) is for finite element systems on unstructured or anisotropic meshes.
 //! - [`BandCholesky`]: banded direct factorisation, for long thin grids or as a
 //!   preconditioner for operators with high-contrast faces that multigrid handles poorly.
 //!
@@ -18,12 +19,14 @@ mod cg;
 mod csr;
 mod grid;
 mod multigrid;
+mod twolevel;
 
 pub use band::BandCholesky;
 pub use cg::{CgOptions, CgStats, Identity, Jacobi, NullSpace, Pcg};
 pub use csr::CsrMatrix;
 pub use grid::{Boundary, BoundaryConditions, DiffusionOperator, Grid, Side};
 pub use multigrid::Multigrid;
+pub use twolevel::TwoLevel;
 
 /// A square linear operator `y = A x`.
 pub trait LinearOperator {
