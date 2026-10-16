@@ -60,7 +60,8 @@ impl HayMorphology {
             let err = |m: &str| format!("line {}: {m}", ln + 1);
             let mut f = line.split_whitespace();
             let region = match f.next() {
-                None | Some("#") => continue,
+                None => continue,
+                Some(w) if w.starts_with('#') => continue,
                 Some("max_apical") => {
                     out.max_apical = num(f.next()).ok_or_else(|| err("bad max_apical"))?;
                     continue;
@@ -87,8 +88,11 @@ impl HayMorphology {
                 return Err(err("expected 12 numbers per segment"));
             }
             let mut prev = match parent {
-                -1 if last.is_empty() => None,
-                p if p >= 0 && (p as usize) < last.len() => Some(last[p as usize]),
+                -1 if last.is_empty() && region == Region::Soma => None,
+                -1 => return Err(err("only the first section, the soma, has no parent")),
+                p if p >= 0 && (p as usize) < last.len() && region != Region::Soma => {
+                    Some(last[p as usize])
+                }
                 _ => return Err(err("parent section must come earlier")),
             };
             for s in v.chunks_exact(12) {
@@ -121,6 +125,9 @@ impl HayMorphology {
             last.push(out.morph.len() - 1);
         }
         out.morph.validate()?;
+        if out.max_apical <= 0.0 {
+            return Err("missing or non-positive max_apical".into());
+        }
         Ok(out)
     }
 
@@ -165,7 +172,8 @@ mod tests {
 
     #[test]
     fn equivalent_cylinders_keep_area_and_resistance() {
-        let line = "soma -1 1 0 0 -10 0 0 0 0 0 10 1256.6 0.05 0\n\
+        let line = "max_apical 100\n# comment\n\
+                    soma -1 1 0 0 -10 0 0 0 0 0 10 1256.6 0.05 0\n\
                     basal 0 2 0 0 10 0 0 15 0 0 20 30 2 5 0 0 20 0 0 25 0 0 30 20 4 15";
         let m = HayMorphology::parse(line).unwrap();
         let c = &m.morph.compartments;
@@ -187,5 +195,7 @@ mod tests {
         assert!(HayMorphology::parse("basal 3 1 0 0 0 0 0 1 0 0 2 1 1 0").is_err());
         assert!(HayMorphology::parse("soma -1 1 0 0 0").is_err());
         assert!(HayMorphology::parse("dend -1 1").is_err());
+        // Without max_apical the Ih gradient is undefined.
+        assert!(HayMorphology::parse("soma -1 1 0 0 -10 0 0 0 0 0 10 1256.6 0.05 0").is_err());
     }
 }
