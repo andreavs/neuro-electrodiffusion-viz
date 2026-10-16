@@ -1,0 +1,32 @@
+.kv { display: flex; flex-direction: column; gap: 16px; }
+.kv-head h2 { margin: 0 0 6px; font-size: 1.25rem; }
+.kv-head p { margin: 0; max-width: 80ch; line-height: 1.45; }
+.kv-main { display: grid; grid-template-columns: minmax(0, 1fr) 260px; gap: 16px; }
+.kv-stage {
+  position: relative; min-height: 520px; border-radius: 12px; overflow: hidden;
+  background: radial-gradient(circle at 50% 40%, #2a2e3a, #111216); border: 1px solid var(--border);
+}
+.kv-canvas { display: block; width: 100%; height: 100%; min-height: 520px; touch-action: none; }
+.kv-colorbar { position: absolute; top: 10px; right: 10px; }
+.kv-legend {
+  position: absolute; left: 10px; bottom: 8px; font-size: 0.8rem; color: #d7dae3; pointer-events: none;
+  display: flex; align-items: center; gap: 6px;
+}
+.kv-vbar { display: inline-block; width: 60px; height: 8px; border-radius: 2px; background: linear-gradient(to right, #3b4cc0, #dddddd, #b40426); }
+.kv-viewctl { display: flex; flex-direction: column; gap: 8px; margin-top: 12px; font-size: 0.9rem; }
+.kv-viewctl label { display: flex; flex-direction: column; gap: 2px; }
+.kv-viewctl label:has(input[type='checkbox']) { flex-direction: row; align-items: center; gap: 6px; }
+.kv-plots { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) 260px; gap: 16px; align-items: start; }
+.kv-plots figure { margin: 0; padding: 10px; background: var(--surface); border: 1px solid var(--border); border-radius: 12px; }
+.kv-plots figcaption { font-size: 0.85rem; color: var(--muted); margin-bottom: 4px; }
+.kv-plots canvas { display: block; width: 100%; height: 180px; color: var(--text); }
+.kv-readout {
+  display: grid; grid-template-columns: auto 1fr; gap: 6px 12px; margin: 0; padding: 12px; font-size: 0.9rem;
+  background: var(--surface); border: 1px solid var(--border); border-radius: 12px; font-variant-numeric: tabular-nums;
+}
+.kv-readout dt { color: var(--muted); }
+.kv-readout dd { margin: 0; text-align: right; }
+@media (max-width: 860px) {
+  .kv-main, .kv-plots { grid-template-columns: 1fr; }
+  .kv-stage, .kv-canvas { min-height: 360px; }
+}
