@@ -37,6 +37,13 @@ export class FrameMailbox {
   }
 }
 
+/** Sets `<html data-solver>` for the browser smoke test; a no-op outside the DOM (unit tests). */
+function markSolver(state: 'ready' | 'error' | undefined): void {
+  if (typeof document === 'undefined') return;
+  if (state) document.documentElement.dataset.solver = state;
+  else delete document.documentElement.dataset.solver;
+}
+
 function defaultWorker(): WorkerLike {
   return new Worker(new URL('./worker.ts', import.meta.url), { type: 'module' }) as WorkerLike;
 }
@@ -76,15 +83,20 @@ export class SimClient {
     return () => this.listeners.delete(listener);
   }
 
-  /** Load the WASM module; resolves with its version. */
+  /**
+   * Load the WASM module; resolves with its version. Mirrors the outcome on
+   * `<html data-solver="ready|error">`, which the browser smoke test (web/e2e) waits for.
+   */
   ready(): Promise<string> {
     return new Promise((resolve, reject) => {
       const off = this.on((m) => {
         if (m.type === 'ready') {
           off();
+          markSolver('ready');
           resolve(m.version);
         } else if (m.type === 'error') {
           off();
+          markSolver('error');
           reject(new Error(m.message));
         }
       });
@@ -137,6 +149,7 @@ export class SimClient {
   terminate(): void {
     if (this.terminated) return;
     this.terminated = true;
+    markSolver(undefined);
     for (const d of this.disposers) d();
     this.disposers.clear();
     this.listeners.clear();
