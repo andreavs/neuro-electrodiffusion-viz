@@ -7,7 +7,9 @@ describe('transferablesOf', () => {
     const b = new Float32Array(8);
     const out = transferablesOf({
       type: 'frame',
+      seq: 1,
       timeMs: 0,
+      runtime: { running: false, stepsPerSec: 0, simMsPerSec: 0, solverMs: 0 },
       fields: [
         { name: 'a', shape: [4], data: a },
         { name: 'b', shape: [2, 4], data: b },
