@@ -20,6 +20,9 @@ describe('shard helpers', () => {
     const direct = summary([...a, ...b]);
     for (let i = 0; i < 4; i++) expect(pooled[i]).toBeCloseTo(direct[i]!, 12);
     expect(mergeMfpt([summary([7])])[1]).toBeNaN();
+    // A shard with no exits yet still adds its ions' time inside to the censored estimate.
+    const c = Float64Array.of(2, 0, 2, 3); // censored = (exits + inside) / 2 = 3
+    expect(mergeMfpt([c, Float64Array.of(NaN, NaN, 0, NaN)], 10 * 100)[3]).toBe((3 * 2 + 1000) / 2);
   });
 
   it('weights histograms by each shard’s ions', () => {

@@ -19,14 +19,16 @@ export function splitEvenly(n: number, k: number): number[] {
 
 /**
  * Combines per-shard `[mean, se, n, censored_mean]` exit-time summaries into the summary of
- * the pooled sample (the SE from the pooled sum of squared deviations).
+ * the pooled sample (the SE from the pooled sum of squared deviations). `insideMs` is the
+ * time spent inside by the ions of shards with no exits yet (their ions × elapsed time),
+ * which their own censored mean cannot carry.
  */
-export function mergeMfpt(parts: Float64Array[]): Float64Array {
+export function mergeMfpt(parts: Float64Array[], insideMs = 0): Float64Array {
   const used = parts.filter((p) => p[2]! > 0);
   const n = used.reduce((a, p) => a + p[2]!, 0);
   if (n === 0) return Float64Array.of(NaN, NaN, 0, NaN);
   const mean = used.reduce((a, p) => a + p[0]! * p[2]!, 0) / n;
-  const censored = used.reduce((a, p) => a + p[3]! * p[2]!, 0) / n;
+  const censored = (used.reduce((a, p) => a + p[3]! * p[2]!, 0) + insideMs) / n;
   let ss = 0;
   for (const p of used) {
     const [m, se, k] = [p[0]!, p[1]!, p[2]!];
