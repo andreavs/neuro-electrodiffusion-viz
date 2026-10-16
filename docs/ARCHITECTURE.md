@@ -134,3 +134,8 @@ Constants: R = 8.314 J/(K mol), F = 9.648·10⁴ C/mol, T = 300 K.
 - Walls reflect; the bottom of the neck absorbs. Quantity of interest: mean first passage
   time (MFPT) from the head centre, with and without a field along the neck. Boundary effects
   converge for Δt ≲ 10⁻⁴ ms.
+- Optionally (the view's default) the neck opens into a parent dendrite instead: a cylinder of
+  radius 0.45 µm along x, 6 µm long, whose top touches the neck base. Escaped ions keep
+  diffusing there until they leave through its absorbing far ends. The MFPT still times the
+  first crossing of the neck base, so it matches the absorbing-base model; the potential drop
+  sits on the spine only, so the dendrite is field-free.

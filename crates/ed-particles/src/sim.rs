@@ -861,6 +861,69 @@ mod tests {
         assert_eq!(sim.n_escaped_moving(), 10);
     }
 
+    #[test]
+    fn ions_spread_into_the_dendrite_after_escaping() {
+        use crate::dendrite::SpineOnDendrite;
+        let g = SpineOnDendrite::with_default_dendrite(SpineGeometry::sharp());
+        let params = ParticleParams {
+            dt: 2e-3,
+            ..Default::default()
+        };
+        let mut sim =
+            ParticleSim::new(g, params, 3).with_field(NeckField::for_spine(g.spine(), 20.0));
+        let n = 2000;
+        sim.release(n);
+        let mut max_moving = 0;
+        while sim.n_alive() > 0 {
+            sim.step(50);
+            sim.for_each_position(|p| assert!(g.contains(p) && !g.escaped(p), "{p:?}"));
+            sim.for_each_escaped_position(|p| assert!(g.contains(p), "{p:?} left the dendrite"));
+            assert_eq!(sim.n_alive() + sim.exit_times().len(), n);
+            assert!(sim.n_escaped_moving() <= sim.exit_times().len());
+            max_moving = max_moving.max(sim.n_escaped_moving());
+        }
+        // Escaped ions stay visible in the dendrite instead of vanishing at the base.
+        assert!(
+            max_moving > n / 4,
+            "only {max_moving} ions in the dendrite at once"
+        );
+        let t = sim.passage_time();
+        assert!(t <= sim.time_ms() && t > sim.time_ms() - 0.2);
+        assert_eq!(sim.survival_curve().last().unwrap().1, 0.0);
+        // Afterwards the escaped ions keep diffusing until they leave through the far ends,
+        // without adding survival samples.
+        let samples = sim.survival_curve().len();
+        while sim.n_escaped_moving() > 0 {
+            sim.step(1000);
+        }
+        assert!(sim.time_ms() > t);
+        assert_eq!(
+            (sim.passage_time(), sim.survival_curve().len()),
+            (t, samples)
+        );
+        assert_eq!(sim.exit_times().len(), n);
+    }
+
+    #[test]
+    fn dendrite_keeps_the_first_passage_time() {
+        use crate::dendrite::SpineOnDendrite;
+        let spine = SpineGeometry::sharp();
+        let params = ParticleParams {
+            dt: 1e-3,
+            ..Default::default()
+        };
+        let n = 1600;
+        let absorbing = mean(&exit_times(spine, params, None, n, 31));
+        let dendrite = SpineOnDendrite::with_default_dendrite(spine);
+        let open = mean(&exit_times(dendrite, params, None, n, 32));
+        eprintln!("MFPT absorbing base {absorbing:.2} ms, open into dendrite {open:.2} ms");
+        // Exit times are roughly exponential, so each mean has a 2.5% standard error.
+        assert!(
+            (open / absorbing - 1.0).abs() < 0.12,
+            "{open} vs {absorbing}"
+        );
+    }
+
     // ---- First-passage tests. These run long simulations; CI runs tests in release mode. ----
 
     /// Work is always split into this many independently seeded threads, so results do not
@@ -868,8 +931,8 @@ mod tests {
     const WORK_UNITS: usize = 8;
 
     /// Runs `n` particles from the head centre until all are absorbed, split across threads.
-    fn exit_times(
-        geom: SpineGeometry,
+    fn exit_times<G: Geometry + Copy + Send>(
+        geom: G,
         params: ParticleParams,
         field: Option<NeckField>,
         n: usize,
