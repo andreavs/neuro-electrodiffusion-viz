@@ -48,3 +48,41 @@ export function autoRange(data: ArrayLike<number>, symmetric = false, out: Range
   out.max = hi;
   return out;
 }
+
+/**
+ * A range that grows to fit new data but never shrinks until `reset()`, so
+ * auto-scaled axes and colour bars stay still instead of jittering frame to
+ * frame. Each expansion adds `headroom` (a fraction of the new span) beyond
+ * the new extreme, so slow drifts don't widen the range on every frame.
+ */
+export class ExpandingRange implements Range {
+  min = Infinity;
+  max = -Infinity;
+
+  constructor(readonly headroom = 0.05) {}
+
+  get empty(): boolean {
+    return !(this.max >= this.min);
+  }
+
+  reset(): void {
+    this.min = Infinity;
+    this.max = -Infinity;
+  }
+
+  /** Grow to cover [lo, hi] (non-finite bounds are ignored). Returns true if the range changed. */
+  include(lo: number, hi: number): boolean {
+    if (!Number.isFinite(lo) || !Number.isFinite(hi) || lo > hi) return false;
+    if (this.empty) {
+      this.min = lo;
+      this.max = hi;
+      return true;
+    }
+    if (lo >= this.min && hi <= this.max) return false;
+    // The first fit is exact; later expansions overshoot a little.
+    const pad = (Math.max(hi, this.max) - Math.min(lo, this.min)) * this.headroom;
+    if (lo < this.min) this.min = lo - pad;
+    if (hi > this.max) this.max = hi + pad;
+    return true;
+  }
+}

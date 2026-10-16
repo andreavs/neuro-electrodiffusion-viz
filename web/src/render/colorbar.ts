@@ -1,12 +1,16 @@
 import { colormapGradient, type Colormap } from './colormap';
-import { autoRange, type Range } from './range';
+import { ExpandingRange, autoRange, type Range } from './range';
 import { formatTick, niceTicks } from './ticks';
 
 export interface ColorbarOptions {
   colormap: Colormap;
   label: string;
   units: string;
-  /** Start in auto mode (range follows the data passed to `update`). Default true. */
+  /**
+   * Start in auto mode: the range follows the data passed to `update`, growing to fit
+   * new extremes but never shrinking until `resetAuto()`, so the colours stay steady.
+   * Default true.
+   */
   auto?: boolean;
   /** Keep the auto range centred on zero. Defaults to `colormap.diverging`. */
   symmetric?: boolean;
@@ -32,6 +36,7 @@ export class Colorbar {
   private readonly minInput: HTMLInputElement;
   private readonly maxInput: HTMLInputElement;
   private readonly scratch: Range = { min: 0, max: 1 };
+  private readonly held = new ExpandingRange();
   private shown = '';
 
   constructor(opts: ColorbarOptions) {
@@ -91,6 +96,7 @@ export class Colorbar {
   }
 
   setAuto(auto: boolean): void {
+    if (auto && !this.auto) this.held.reset();
     this.auto = auto;
     this.autoBox.checked = auto;
     this.syncInputs();
@@ -104,12 +110,24 @@ export class Colorbar {
     this.syncInputs();
   }
 
-  /** In auto mode, recompute the range from `data`. Returns the current range. */
+  /** Forget the auto range; the next `update` fits its data afresh (e.g. after a simulation reset). */
+  resetAuto(): void {
+    this.held.reset();
+  }
+
+  /** In auto mode, grow the range to cover `data`. Returns the current range. */
   update(data: ArrayLike<number>): Range {
-    if (this.auto) {
+    if (this.auto && data.length > 0) {
       const r = autoRange(data, this.symmetric, this.scratch);
-      this.apply(r.min, r.max);
-      this.syncInputs();
+      if (this.held.include(r.min, r.max)) {
+        if (this.symmetric) {
+          const m = Math.max(-this.held.min, this.held.max);
+          this.held.min = -m;
+          this.held.max = m;
+        }
+        this.apply(this.held.min, this.held.max);
+        this.syncInputs();
+      }
     }
     return this.range;
   }

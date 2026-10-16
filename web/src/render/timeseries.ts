@@ -1,3 +1,4 @@
+import { ExpandingRange } from './range';
 import { RingBuffer } from './ringbuffer';
 import { formatTick, niceTicks } from './ticks';
 
@@ -14,7 +15,10 @@ export interface TimeSeriesOptions {
   capacity?: number;
   xLabel?: string;
   yLabel?: string;
-  /** Fixed y range; omitted means auto from visible samples. */
+  /**
+   * Fixed y range. When omitted the range fits the visible samples and then only grows,
+   * so the axis stays still; `clear()` starts it over.
+   */
   yRange?: [number, number];
 }
 
@@ -31,6 +35,7 @@ export class TimeSeriesPlot {
   private readonly observer: ResizeObserver;
   private dirty = true;
   private fg = '';
+  private readonly yHeld = new ExpandingRange(0.1);
 
   constructor(canvas: HTMLCanvasElement, opts: TimeSeriesOptions) {
     this.canvas = canvas;
@@ -53,6 +58,7 @@ export class TimeSeriesPlot {
 
   clear(): void {
     for (const b of this.buffers) b.clear();
+    this.yHeld.reset();
     this.dirty = true;
   }
 
@@ -96,10 +102,11 @@ export class TimeSeriesPlot {
           if (v > yMax) yMax = v;
         }
       }
-      if (!(yMax >= yMin)) [yMin, yMax] = [0, 1];
-      const pad = (yMax - yMin) * 0.08 || Math.max(1e-6, Math.abs(yMax) * 0.05) || 1;
-      yMin -= pad;
-      yMax += pad;
+      if (yMax >= yMin) {
+        const pad = (yMax - yMin) * 0.08 || Math.max(1e-6, Math.abs(yMax) * 0.05) || 1;
+        this.yHeld.include(yMin - pad, yMax + pad);
+      }
+      [yMin, yMax] = this.yHeld.empty ? [0, 1] : [this.yHeld.min, this.yHeld.max];
     }
 
     const left = 48;

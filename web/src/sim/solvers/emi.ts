@@ -1,4 +1,4 @@
-import { EMI_PARAMS, sliceAxis } from '../../scales/emi/params';
+import { EMI_PARAMS, SLICE_FIELDS, sliceAxis } from '../../scales/emi/params';
 import { defaultParams } from '../../ui/controls';
 import { EmiSim } from '../../wasm/pkg/ed_wasm.js';
 import type { FrameField, Params } from '../protocol';
@@ -97,6 +97,8 @@ export function packFrame(sim: EmiWasm, params: Params, state: PackState, steps:
       slice: state.slice,
       nCells,
       probeX: sim.probe_x(),
+      // Which field `slice` holds (index into SLICE_FIELDS), so the view never colours it with another field's bar.
+      sliceField: SLICE_FIELDS.indexOf(String(params.field)),
       stimulated: sim.stimulated(),
       extentX: ex!,
       extentY: ey!,
