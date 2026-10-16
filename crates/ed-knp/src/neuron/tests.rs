@@ -53,6 +53,7 @@ fn somatic_step_fires_repeatedly() {
 fn currents_are_conserved_every_step() {
     let mut n = Neuron::pyramidal();
     n.i_stim = 2.0;
+    n.syn_rate_hz = 5000.0;
     let mut worst: f64 = 0.0;
     for _ in 0..4000 {
         n.step(1);
@@ -67,6 +68,7 @@ fn each_compartment_balances_its_axial_currents() {
     // Backward-Euler rows: membrane current out = axial current in (+ stim).
     let mut n = Neuron::pyramidal();
     n.i_stim = 3.0;
+    n.syn_rate_hz = 20_000.0;
     for _ in 0..200 {
         n.step(1);
         let mut net_in = vec![0.0; n.len()];
@@ -107,10 +109,59 @@ fn outputs_average_over_a_multi_step_call() {
 }
 
 #[test]
+fn poisson_input_rate_controls_firing() {
+    let rate = |hz: f64| {
+        let mut n = Neuron::pyramidal();
+        n.syn_rate_hz = hz;
+        spike_times(&mut n, 1000.0).0.len()
+    };
+    let (none, low, high) = (rate(0.0), rate(1000.0), rate(10_000.0));
+    assert_eq!(none, 0);
+    assert!(low < high && high >= 20, "{low} vs {high} spikes/s");
+}
+
+#[test]
+fn synaptic_events_follow_rate_and_area() {
+    let mut n = Neuron::pyramidal();
+    n.syn_rate_hz = 20_000.0;
+    let (mut events, mut hits) = (0usize, vec![0usize; n.len()]);
+    for _ in 0..40_000 {
+        let before: Vec<f64> = (0..n.passive.len()).map(|j| n.passive.syn_g[j]).collect();
+        n.deliver_synapses(n.time);
+        for (hit, &(act, j)) in hits.iter_mut().zip(&n.slot) {
+            assert!(!act || n.active.syn_g[j] == 0.0, "event on a non-dendrite");
+            if !act && n.passive.syn_g[j] != before[j] {
+                events += 1;
+                *hit += 1;
+            }
+        }
+        n.time += n.params().dt;
+    }
+    // 1 s at 20 kHz: 20000 ± 141 events (at most one counted per compartment
+    // and step, which loses ≈ 0.1 %).
+    assert!((events as f64 - 20_000.0).abs() < 600.0, "{events}");
+    // Basal dendrites (below the soma) get their share of the area.
+    let comps = &n.morphology().compartments;
+    let dend = |c: &&Compartment| c.kind == Kind::Dendrite;
+    let total: f64 = comps.iter().filter(dend).map(|c| c.area()).sum();
+    let (area, count) = comps
+        .iter()
+        .zip(&hits)
+        .filter(|(c, _)| dend(c) && c.centre()[2] < 0.0)
+        .fold((0.0, 0), |(a, k), (c, h)| (a + c.area(), k + h));
+    let expected = events as f64 * area / total;
+    assert!(
+        (count as f64 - expected).abs() < 5.0 * expected.sqrt(),
+        "{count} vs {expected}"
+    );
+}
+
+#[test]
 #[ignore = "timing; run with --release -- --ignored --nocapture"]
 fn step_time() {
     let mut n = Neuron::pyramidal();
     n.i_stim = 0.5;
+    n.syn_rate_hz = 5000.0;
     let steps = 40_000;
     let t0 = std::time::Instant::now();
     n.step(steps);

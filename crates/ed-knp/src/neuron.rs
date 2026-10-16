@@ -34,8 +34,7 @@
 //! Ion assignment:
 //! - Leak currents are ion specific (g_L^Na, g_L^K, g_L^Cl of the membrane
 //!   model), so no non-specific leak needs splitting.
-//! - Synapses (when added) open Na⁺ channels (E_syn = E_Na), so synaptic
-//!   current is Na⁺.
+//! - Synapses open Na⁺ channels (E_syn = E_Na), so synaptic current is Na⁺.
 //! - Cl⁻ currents are reported as the generic anion X⁻ of the KNP model.
 //! - The somatic current electrode is not a transmembrane current and is not
 //!   in any of the arrays. [`Neuron::electrode_return`] gives the
@@ -94,6 +93,10 @@ pub struct NeuronParams {
     pub passive: MembraneParams,
     /// Fixed intra- and extracellular concentrations.
     pub concentrations: IonConcentrations,
+    /// Peak conductance added by one synaptic event, nS.
+    pub syn_weight_ns: f64,
+    /// RNG seed for the Poisson input.
+    pub seed: u64,
     /// Simulated time to relax to rest during construction (with Δt = 0.5 ms), ms.
     pub settle_ms: f64,
 }
@@ -106,6 +109,8 @@ impl Default for NeuronParams {
             active: SOMA_AXON,
             passive: DENDRITE,
             concentrations: TISSUE_CONCENTRATIONS,
+            syn_weight_ns: 1.0,
+            seed: 1,
             settle_ms: 200.0,
         }
     }
@@ -115,6 +120,13 @@ impl Default for NeuronParams {
 #[derive(Debug, Clone)]
 pub struct Neuron {
     params: NeuronParams,
+    /// Total rate of excitatory synaptic events over all dendrites, Hz,
+    /// placed in proportion to membrane area (uniform density, as in
+    /// Publication 1). Can be changed at any time. With the default cell and
+    /// weight, about 2 kHz gives the paper's ~5 spikes/s; firing rises to
+    /// ~100 spikes/s near 20 kHz, and much higher rates drive the soma into
+    /// depolarisation block.
+    pub syn_rate_hz: f64,
     /// Current injected into the root (soma), nA (depolarising positive). Can
     /// be changed at any time.
     pub i_stim: f64,
@@ -133,6 +145,10 @@ pub struct Neuron {
     slot: Vec<(bool, usize)>,
     active: MembranePatches,
     passive: MembranePatches,
+    /// Cumulative dendritic area fraction per compartment (1.0 at the last
+    /// dendrite, 0 contribution from non-dendrites), for placing events.
+    syn_cdf: Vec<f64>,
+    rng: u64,
     time: f64,
 
     v: Vec<f64>,
@@ -183,9 +199,27 @@ impl Neuron {
                 n_pas += 1;
             }
         }
+        let mut acc = 0.0;
+        let mut syn_cdf: Vec<f64> = comps
+            .iter()
+            .map(|c| {
+                acc += if c.kind == Kind::Dendrite {
+                    c.area()
+                } else {
+                    0.0
+                };
+                acc
+            })
+            .collect();
+        syn_cdf
+            .iter_mut()
+            .for_each(|x| *x /= acc.max(f64::MIN_POSITIVE));
         let conc = params.concentrations;
         let mut neuron = Self {
             i_stim: 0.0,
+            syn_rate_hz: 0.0,
+            syn_cdf,
+            rng: splitmix64(params.seed) | 1,
             centres: comps.iter().map(Compartment::centre).collect(),
             scale: comps.iter().map(|c| c.area() * 1e-5).collect(),
             parent,
@@ -267,9 +301,51 @@ impl Neuron {
         &self.i_cap
     }
 
+    /// Uniform random number in [0, 1) (xorshift64*).
+    fn uniform(&mut self) -> f64 {
+        let mut x = self.rng;
+        x ^= x >> 12;
+        x ^= x << 25;
+        x ^= x >> 27;
+        self.rng = x;
+        (x.wrapping_mul(0x2545_F491_4F6C_DD1D) >> 11) as f64 * (1.0 / (1u64 << 53) as f64)
+    }
+
+    /// Draw this step's Poisson number of synaptic events, place each on a
+    /// dendritic compartment with probability proportional to its area, and
+    /// add its conductance to that compartment's exponential synapse.
+    fn deliver_synapses(&mut self, t: f64) {
+        let mean = self.syn_rate_hz * 1e-3 * self.params.dt;
+        if mean <= 0.0 || !matches!(self.syn_cdf.last(), Some(&x) if x > 0.0) {
+            return;
+        }
+        // Knuth's method; the mean per step is small (≈ 0.5 at 20 kHz).
+        let limit = (-mean).exp();
+        let mut prod = self.uniform();
+        while prod > limit {
+            let u = self.uniform();
+            let i = self
+                .syn_cdf
+                .partition_point(|&c| c <= u)
+                .min(self.len() - 1);
+            let (act, j) = self.slot[i];
+            // nS → mS/cm²: 1e-6 mS / (A · 1e-8 cm²) = 1e-3 / scale.
+            let dg = self.params.syn_weight_ns * 1e-3 / self.scale[i];
+            let pop = if act {
+                &mut self.active
+            } else {
+                &mut self.passive
+            };
+            let g = pop.synaptic_conductance(j, t) + dg;
+            pop.set_synapse(j, g, t);
+            prod *= self.uniform();
+        }
+    }
+
     /// One internal step; adds `w` times its currents to the outputs.
     fn step_once(&mut self, w: f64) {
         let (t, dt) = (self.time, self.params.dt);
+        self.deliver_synapses(t);
         self.active.compute_currents(t);
         self.passive.compute_currents(t);
         let n = self.len();
@@ -321,6 +397,13 @@ impl Neuron {
         update_gates(&mut self.active, dt);
         self.time += dt;
     }
+}
+
+fn splitmix64(seed: u64) -> u64 {
+    let mut z = seed.wrapping_add(0x9E37_79B9_7F4A_7C15);
+    z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+    z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
+    z ^ (z >> 31)
 }
 
 /// Rush-Larsen update of the HH gates at the patches' current potential.
