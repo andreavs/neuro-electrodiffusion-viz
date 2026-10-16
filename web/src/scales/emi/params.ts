@@ -17,7 +17,6 @@ export const EMI_PARAMS = [
       { value: '4', label: '16 (4 × 4)' },
     ],
     default: '3',
-    help: 'Changing the bundle rebuilds the mesh and restarts the simulation',
   },
   {
     kind: 'number',
@@ -118,7 +117,6 @@ export const EMI_PARAMS = [
     step: 0.025,
     default: 0.05,
     unit: 'ms',
-    help: 'Backward Euler step; smaller is more accurate, larger runs faster',
   },
 ] as const satisfies ParamSchema;
 

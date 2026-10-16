@@ -27,6 +27,12 @@ export interface EmiWasm {
 
 export type EmiWasmFactory = (perSide: number, gap: number, dt: number) => EmiWasm;
 
+/**
+ * Mesh and slice versions, shared by every solver in this worker so a new solver (after a
+ * Reset) never repeats a version the view has already cached.
+ */
+let version = 0;
+
 /** Keys that need a new mesh. */
 const GEOMETRY_KEYS = ['axons', 'gap'];
 const SLICE_KEYS = ['slice', 'slicePos'];
@@ -61,19 +67,21 @@ export function packFrame(sim: EmiWasm, params: Params, state: PackState, steps:
       // Node indices stay exact in float32 (meshes have far fewer than 2²⁴ nodes).
       { name: 'quads', shape: [quads.length / 4, 4], data: Float32Array.from(quads) },
     );
-    state.geometrySent = true;
   }
-  if (!state.sliceSent) {
+  const sendSlice = !state.sliceSent;
+  if (sendSlice) {
     const tags = sim.slice_tags(axis, frac);
     fields.push(
       { name: 'slicePositions', shape: [tags.length, 4, 3], data: sim.slice_positions(axis, frac) },
       { name: 'sliceTags', shape: [tags.length], data: tags },
     );
-    state.sliceSent = true;
   }
   const phiM = sim.phi_m();
   const slice = sim.slice_values(axis, frac, String(params.field));
   const traces = sim.take_traces();
+  // Only now that every wasm call has succeeded: a throw above resends the static parts.
+  state.geometrySent = true;
+  if (sendSlice) state.sliceSent = true;
   fields.push(
     { name: 'phiM', shape: [phiM.length], data: phiM },
     { name: 'slice', shape: [slice.length / 4, 4], data: slice },
@@ -104,7 +112,7 @@ export function makeEmiSolver(
   now: () => number = () => performance.now(),
 ): WorkerSolver {
   const params: Params = { ...defaultParams(EMI_PARAMS), ...initial };
-  const state: PackState = { geometry: 0, slice: 0, geometrySent: false, sliceSent: false };
+  const state: PackState = { geometry: version, slice: version, geometrySent: false, sliceSent: false };
   let steps = 0;
   let msPerStep = 0;
   let nextStim = Infinity;
@@ -120,15 +128,20 @@ export function makeEmiSolver(
   /** A fresh simulation with the current parameters, stimulated at t = 0. */
   const build = (): EmiWasm => {
     const s = create(Number(params.axons), Number(params.gap), Number(params.dt));
-    s.set_probe(Number(params.probe));
-    s.stimulate(String(params.stimulus));
+    try {
+      s.set_probe(Number(params.probe));
+      s.stimulate(String(params.stimulus));
+    } catch (err) {
+      s.free();
+      throw err;
+    }
     schedule(s);
     steps = 0;
     msPerStep = 0;
     owed = 0;
     lastWall = NaN;
-    state.geometry++;
-    state.slice++;
+    state.geometry = ++version;
+    state.slice = ++version;
     state.geometrySent = false;
     state.sliceSent = false;
     return s;
@@ -143,6 +156,7 @@ export function makeEmiSolver(
       // MAX_CATCH_UP_MS of wall time after a pause or a slow tick.
       const cap = Math.max(dt, (MAX_CATCH_UP_MS * Number(params.rate)) / 1000);
       const wall = Number.isFinite(lastWall) ? t0 - lastWall : 0;
+      if (!Number.isFinite(owed)) owed = 0;
       owed = Math.min(owed + (Math.min(wall, MAX_CATCH_UP_MS) * Number(params.rate)) / 1000, cap);
       lastWall = t0;
       let taken = 0;
@@ -177,7 +191,7 @@ export function makeEmiSolver(
       if ('period' in changed) schedule(current);
       if ('probe' in changed) current.set_probe(Number(params.probe));
       if (SLICE_KEYS.some((k) => k in changed)) {
-        state.slice++;
+        state.slice = ++version;
         state.sliceSent = false;
       }
     },

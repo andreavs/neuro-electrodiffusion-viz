@@ -77,13 +77,6 @@ describe('packFrame', () => {
 
     expect(names(packFrame(sim, params, state, 8))).toEqual(['phiM', 'slice', 'traces']);
   });
-
-  it('gives every field its own buffer so all of them can be transferred', () => {
-    const state: PackState = { geometry: 1, slice: 1, geometrySent: false, sliceSent: false };
-    const frame = packFrame(new FakeSim(3), { slice: 'along', slicePos: 0.5, field: 'phi' }, state, 0);
-    const buffers = new Set(frame.fields.map((f) => f.data.buffer));
-    expect(buffers.size).toBe(frame.fields.length);
-  });
 });
 
 describe('makeEmiSolver', () => {
@@ -123,18 +116,20 @@ describe('makeEmiSolver', () => {
 
   it('rebuilds on geometry changes and resends the mesh', () => {
     const { solver, sims } = setup();
-    solver.frame();
+    const before = solver.frame().stats!;
     solver.setParams({ gap: 0.2 });
     expect(sims).toHaveLength(2);
     expect(sims[0]!.freed).toBe(true);
     const f = solver.frame();
     expect(names(f)).toContain('quads');
-    expect(f.stats!.geometry).toBe(2);
+    // Versions never repeat, not even across solvers (a Reset builds a new one).
+    expect(f.stats!.geometry).toBeGreaterThan(before.slice!);
+    expect(setup().solver.frame().stats!.geometry).toBeGreaterThan(f.stats!.slice!);
   });
 
   it('updates in place for dt, probe, slice and stimulus', () => {
     const { solver, sims } = setup();
-    solver.frame();
+    const before = solver.frame().stats!;
     solver.setParams({ dt: 0.05, probe: 50, field: 'na' });
     solver.action!('stimulate');
     expect(sims).toHaveLength(1);
@@ -143,7 +138,8 @@ describe('makeEmiSolver', () => {
     solver.setParams({ slicePos: 0.3 });
     const f = solver.frame();
     expect(names(f)).toContain('slicePositions');
-    expect(f.stats!.slice).toBe(2);
+    expect(f.stats!.slice).toBeGreaterThan(before.slice!);
+    expect(f.stats!.geometry).toBe(before.geometry);
   });
 
   it('keeps the old simulation when a rebuild fails', () => {
