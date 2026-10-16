@@ -10,7 +10,13 @@ export const about: AboutContent = {
     Because both sides of the membrane are solved together, one axon firing changes the
     extracellular potential and concentrations around its neighbours. This lets the model show
     ephaptic coupling in a bundle of unmyelinated axons, and how K⁺ builds up in the narrow gaps
-    between them.`,
+    between them.
+
+    The same equations run on realistic cells: a stylised pyramidal neuron, a piece of spiny
+    dendrite, and the soma and proximal dendrites of a reconstructed layer 5b pyramidal cell
+    (Hay et al. 2011, the morphology used at the tissue scale). These were meshed offline with
+    gmsh into tetrahedra that are fine at the membrane and coarser away from it, so a time step
+    stays fast enough for the browser.`,
   equations: [
     {
       tex: String.raw`\frac{\partial [k]_r}{\partial t} + \nabla\cdot\mathbf{J}_r^k = 0, \qquad \mathbf{J}_r^k = -D_r^k\nabla[k]_r - \frac{D_r^k z_k}{\psi}[k]_r\nabla\phi_r \qquad \text{in } \Omega_r,\ r\in\{i,e\}`,
@@ -64,6 +70,9 @@ export const about: AboutContent = {
     { symbol: String.raw`\Delta t`, description: 'PDE time step (membrane ODE uses 25 substeps)', value: '0.1 ms' },
   ],
   references: [
+    {
+      text: 'E. Hay, S. Hill, F. Schürmann, H. Markram, I. Segev. Models of neocortical layer 5b pyramidal cells capturing a wide range of dendritic and perisomatic active properties. <em>PLoS Comput. Biol.</em> 7(7): e1002107 (2011).',
+    },
     {
       text: 'A. J. Ellingsrud*, A. Solbrå*, K. H. Pettersen, G. T. Einevoll, G. Halnes, M. E. Rognes. A mathematical framework for electrodiffusion based on explicit geometrical representation applied to ephaptic coupling in unmyelinated olfactory axon bundles. Publication 2 in A. V. Solbrå, <em>Modeling Electrical and Diffusive Transports in Neural Tissue</em>, PhD thesis, University of Oslo (2019).',
     },

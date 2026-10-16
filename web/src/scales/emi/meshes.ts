@@ -1,4 +1,38 @@
-/** Loaders for the realistic cell geometries in public/meshes (made by tools/meshes/generate.py). */
+/**
+ * The realistic cell geometries in public/meshes (made by tools/meshes/generate.py): their
+ * names and stimulus sites for the controls, and loaders for the files.
+ */
+
+export const MESH_GEOMETRIES = [
+  {
+    value: 'neuron',
+    label: 'Stylised neuron',
+    sites: [
+      { value: 'soma', label: 'Soma' },
+      { value: 'apical', label: 'Apical dendrite tip' },
+      { value: 'basal', label: 'Basal dendrite tip' },
+    ],
+  },
+  {
+    value: 'spiny-dendrite',
+    label: 'Spiny dendrite',
+    sites: [
+      { value: 'spine1', label: 'Mushroom spine head' },
+      { value: 'spine0', label: 'Thin spine head' },
+      { value: 'spine2', label: 'Stubby spine head' },
+      { value: 'shaft', label: 'Dendrite shaft' },
+    ],
+  },
+  {
+    value: 'hay-neuron',
+    label: 'Reconstructed neuron',
+    sites: [
+      { value: 'soma', label: 'Soma' },
+      { value: 'apical', label: 'Apical trunk' },
+      { value: 'basal', label: 'Basal dendrite' },
+    ],
+  },
+] as const;
 
 /** A sphere on the membrane, µm. */
 export interface MeshSite {
