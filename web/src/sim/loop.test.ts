@@ -290,4 +290,46 @@ describe('RunLoop', () => {
     expect(host.frames()).toHaveLength(posted + 1);
     expect(host.pendingTasks).toBe(1);
   });
+
+  it("stops ticking on 'wait' and resumes when the solver wakes it", () => {
+    let wake = () => {};
+    let ready = false;
+    let advances = 0;
+    const solver = {
+      advance: () => {
+        advances++;
+        return ready ? true : ('wait' as const);
+      },
+      frame: () => ({ timeMs: advances, fields: [] }),
+      setParams: () => {},
+      dispose: () => {},
+      setWake: (w: () => void) => {
+        wake = w;
+      },
+    };
+    const l = new RunLoop(host, { particles: () => solver } as unknown as Record<ScaleId, SolverFactory>);
+    l.handle({ type: 'create', scale: 'particles', params: {} });
+    l.handle({ type: 'run', running: true });
+    l.handle({ type: 'ack', seq: host.lastFrame().seq });
+    l.handle({ type: 'ack', seq: host.lastFrame().seq });
+    const posted = host.frames().length;
+    host.runTasks();
+    expect(advances).toBe(1);
+    expect(host.pendingTasks).toBe(0);
+    expect(host.frames()).toHaveLength(posted);
+    ready = true;
+    wake();
+    host.runTasks(1);
+    expect(advances).toBe(2);
+    expect(host.frames()).toHaveLength(posted + 1);
+    // A wake while paused posts a frame (once acked) but schedules no tick.
+    l.handle({ type: 'run', running: false });
+    l.handle({ type: 'ack', seq: host.lastFrame().seq }); // posts the paused state
+    l.handle({ type: 'ack', seq: host.lastFrame().seq });
+    const before = host.frames().length;
+    wake();
+    expect(host.pendingTasks).toBe(0);
+    expect(host.frames()).toHaveLength(before + 1);
+    expect(advances).toBe(2);
+  });
 });
