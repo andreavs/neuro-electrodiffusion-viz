@@ -21,7 +21,7 @@
 //! excitatory events at [`HayNeuron::syn_rate_hz`], placed uniformly over the membrane area
 //! as in Publication 1, each adding `syn_weight_ns` to an exponential synapse (τ = 2 ms).
 
-use super::channels::{self, Densities, State};
+use super::channels::{self, Densities, State, E_K, E_NA};
 use super::HayMorphology;
 use crate::neuron::Morphology;
 use ed_core::Simulation;
@@ -316,10 +316,12 @@ impl HayNeuron {
             let (d, s) = (&self.dens[i], self.scale[i]);
             let v_new = self.rhs[self.node[i]];
             let c = self.state[i].currents(d, v_new);
-            let syn = self.g_syn[i] * v_new;
+            // Synaptic current g (V − 0) as a Na⁺ part reversing at E_Na plus a K⁺ part
+            // reversing at E_K.
+            let (gs, f) = (self.g_syn[i], f_syn);
             self.i_cap[i] += w * d.cm * s / dt * (v_new - self.v[i]);
-            self.i_na[i] += w * (c.na * s + f_syn * syn);
-            self.i_k[i] += w * (c.k * s + (1.0 - f_syn) * syn);
+            self.i_na[i] += w * (c.na * s + f * gs * (v_new - E_NA));
+            self.i_k[i] += w * (c.k * s + (1.0 - f) * gs * (v_new - E_K));
             self.i_ca[i] += w * c.ca * s;
             self.state[i].advance(d, v_new, c.ca, dt);
             self.v[i] = v_new;
@@ -392,6 +394,20 @@ mod tests {
         assert!((n.v()[0] + 77.25).abs() < 0.05, "{}", n.v()[0]);
         n.i_stim = 1.9;
         assert!((spikes(&mut n, 2000.0) as i64 - 40).abs() <= 1);
+    }
+
+    #[test]
+    fn synapses_let_na_in_and_k_out() {
+        let mut quiet = HayNeuron::cell1();
+        let mut driven = quiet.clone();
+        driven.g_syn[100] = 0.01;
+        quiet.step(1);
+        driven.step(1);
+        let (dna, dk) = (
+            driven.i_na[100] - quiet.i_na[100],
+            driven.i_k[100] - quiet.i_k[100],
+        );
+        assert!(dna < 0.0 && dk > 0.0, "{dna} {dk}");
     }
 
     #[test]
