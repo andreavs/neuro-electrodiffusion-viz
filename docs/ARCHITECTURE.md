@@ -7,9 +7,16 @@ UI thread (web/src)                     Worker (web/src/sim/worker.ts)
 -------------------                     ------------------------------
 menu → hash route (#/knp|#/emi|#/particles)
 ScaleView.mount(root, SimClient) ──────▶ init: load WASM
-  controls → ToWorker messages ────────▶ create / run / setParams / dispose
-  requestAnimationFrame: draw latest ◀── frame { timeMs, fields: Float32Array[] (transferred), stats }
+  ControlPanel → ToWorker messages ────▶ create / run / setParams / action / reset / setBudget / dispose
+  startRenderLoop (rAF): takeFrame ◀──── frame { seq, timeMs, fields: Float32Array[] (transferred), stats, runtime }
+                         ack(seq) ─────▶ RunLoop (web/src/sim/loop.ts) posts the next frame
 ```
+
+- Back-pressure: at most one frame is in flight. The worker's `RunLoop` keeps ticking up to two
+  ticks ahead while waiting for an `ack`, then idles, so a hidden tab stops the solver.
+- A scale view typically does: `new ControlPanel(root, client, schema)`, `await client.ready()`,
+  `client.create(scale, panel.params())`, `startRenderLoop(client, { draw, stats: panel })`.
+  Both register with `client.addDisposer`, so terminating the client cleans them up.
 
 - `web/src/sim/protocol.ts`: message types shared by both sides.
 - `web/src/sim/solver.ts`: `WorkerSolver` interface. Each scale implements it in

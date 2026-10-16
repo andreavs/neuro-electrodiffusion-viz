@@ -6,7 +6,7 @@ export function placeholderView(info: ScaleInfo): ScaleView {
   return {
     async mount(root: HTMLElement, client: SimClient) {
       root.innerHTML = `
-        <section class="placeholder">
+        <section class="placeholder" data-placeholder>
           <h2>${info.title}</h2>
           <p>${info.summary}</p>
           <p class="muted" data-status>Loading solver…</p>

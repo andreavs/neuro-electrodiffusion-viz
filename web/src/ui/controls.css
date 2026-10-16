@@ -1,0 +1,27 @@
+.ctl-panel {
+  display: flex; flex-direction: column; gap: 14px; padding: 14px;
+  background: var(--surface); border: 1px solid var(--border); border-radius: 12px;
+  font-size: 0.9rem; min-width: 220px;
+}
+.ctl-transport { display: flex; gap: 8px; }
+.ctl-group { display: flex; flex-direction: column; gap: 12px; }
+.ctl { display: flex; flex-direction: column; gap: 4px; }
+.ctl-label { display: flex; justify-content: space-between; gap: 8px; color: var(--muted); }
+.ctl-label output { color: var(--text); font-variant-numeric: tabular-nums; }
+.ctl-toggle { flex-direction: row; align-items: center; gap: 8px; }
+.ctl input[type='range'] { width: 100%; accent-color: var(--accent); }
+.ctl select {
+  font: inherit; color: var(--text); background: var(--bg);
+  border: 1px solid var(--border); border-radius: 6px; padding: 4px 6px;
+}
+.ctl-button {
+  font: inherit; cursor: pointer; padding: 6px 12px; border-radius: 6px;
+  color: var(--text); background: var(--bg); border: 1px solid var(--border);
+}
+.ctl-button:hover, .ctl-button:focus-visible { border-color: var(--accent); }
+.ctl-primary { background: var(--accent); border-color: var(--accent); color: #fff; min-width: 72px; }
+.ctl-stats {
+  display: grid; grid-template-columns: auto 1fr; gap: 2px 12px; margin: 0;
+  color: var(--muted); font-variant-numeric: tabular-nums;
+}
+.ctl-stats dd { margin: 0; text-align: right; color: var(--text); }
