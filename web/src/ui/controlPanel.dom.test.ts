@@ -9,7 +9,8 @@ const schema = [
   { kind: 'number', key: 'gsyn', label: 'g', min: 0, max: 10, step: 0.5, default: 4, unit: 'mS' },
   { kind: 'select', key: 'geom', label: 'Spine', options: [{ value: 'a', label: 'A' }, { value: 'b', label: 'B' }], default: 'a' },
   { kind: 'toggle', key: 'field', label: 'Field', default: true },
-  { kind: 'button', key: 'stimulate', label: 'Stimulate' },
+  { kind: 'button', key: 'stimulate', label: 'Stimulate', showWhen: { key: 'geom', values: ['a'] } },
+  { kind: 'number', key: 'neck', label: 'Neck', min: 0, max: 1, step: 0.1, default: 0.5, showWhen: { key: 'geom', values: ['b'] } },
 ] as const satisfies ParamSchema;
 
 describe('ControlPanel (DOM)', () => {
@@ -37,7 +38,7 @@ describe('ControlPanel (DOM)', () => {
 
   it('sends the default speed budget on mount and exposes params without speed', () => {
     expect(worker.sent[0]).toEqual({ type: 'setBudget', budgetMs: DEFAULT_BUDGET_MS });
-    expect(panel.params()).toEqual({ gsyn: 4, geom: 'a', field: true });
+    expect(panel.params()).toEqual({ gsyn: 4, geom: 'a', field: true, neck: 0.5 });
   });
 
   it('sends one setParams per change even though input and change both fire', () => {
@@ -58,7 +59,7 @@ describe('ControlPanel (DOM)', () => {
       { type: 'setParams', params: { geom: 'b' } },
     ]);
     expect(el('[data-out="gsyn"]').textContent).toBe('7.5 mS');
-    expect(panel.params()).toEqual({ gsyn: 7.5, geom: 'b', field: false });
+    expect(panel.params()).toEqual({ gsyn: 7.5, geom: 'b', field: false, neck: 0.5 });
   });
 
   it('setValues updates the controls and sends only the changed keys in one message', () => {
@@ -119,5 +120,18 @@ describe('ControlPanel (DOM)', () => {
     fire(slider, 'input');
     worker.emit({ type: 'error', message: 'late' });
     expect(worker.sent.length).toBe(before);
+  });
+
+  it('shows controls only while their showWhen holds', () => {
+    const shown = (sel: string) => !el(sel).closest<HTMLElement>('.ctl')!.hidden;
+    expect(shown('[data-action="stimulate"]')).toBe(true);
+    expect(shown('[data-key="neck"]')).toBe(false);
+    const select = el<HTMLSelectElement>('[data-key="geom"]');
+    select.value = 'b';
+    fire(select, 'change');
+    expect(shown('[data-action="stimulate"]')).toBe(false);
+    expect(shown('[data-key="neck"]')).toBe(true);
+    panel.setValues({ geom: 'a' });
+    expect(shown('[data-key="neck"]')).toBe(false);
   });
 });

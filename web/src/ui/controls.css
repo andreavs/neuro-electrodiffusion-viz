@@ -6,6 +6,7 @@
 .ctl-transport { display: flex; gap: 8px; }
 .ctl-group { display: flex; flex-direction: column; gap: 12px; }
 .ctl { display: flex; flex-direction: column; gap: 4px; }
+.ctl[hidden] { display: none; }
 .ctl-label { display: flex; justify-content: space-between; gap: 8px; color: var(--muted); }
 .ctl-label output { color: var(--text); font-variant-numeric: tabular-nums; }
 .ctl-toggle { flex-direction: row; align-items: center; gap: 8px; }
