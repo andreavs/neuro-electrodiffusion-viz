@@ -41,17 +41,32 @@ impl KnpSolver {
         let Some(cell) = self.cell_at(pos) else {
             return false;
         };
+        self.add_ion_source_in_cell(cell, k, rate);
+        true
+    }
+
+    /// [`add_ion_source`](Self::add_ion_source) by cell index (from [`cell_at`](Self::cell_at)),
+    /// for callers that deposit many sources at fixed positions.
+    pub fn add_ion_source_in_cell(&mut self, cell: usize, k: usize, rate: f64) {
         self.src[k][cell] += rate * self.source_scale;
         self.mark_source(cell);
-        true
     }
 
     /// Adds the transmembrane current (nA) carried by species `k` at `pos`, positive outward
     /// as a conventional current: an outward current releases cations but takes up anions.
     pub fn add_ion_current(&mut self, pos: [f64; 3], k: usize, i_na: f64) -> bool {
+        let Some(cell) = self.cell_at(pos) else {
+            return false;
+        };
+        self.add_ion_current_in_cell(cell, k, i_na);
+        true
+    }
+
+    /// [`add_ion_current`](Self::add_ion_current) by cell index.
+    pub fn add_ion_current_in_cell(&mut self, cell: usize, k: usize, i_na: f64) {
         let z = self.model.z[k];
         assert!(z != 0.0, "a neutral species carries no current");
-        self.add_ion_source(pos, k, na_to_rate(i_na, z))
+        self.add_ion_source_in_cell(cell, k, na_to_rate(i_na, z));
     }
 
     /// Adds a capacitive current (nA) leaving the neuron at `pos`.
@@ -59,9 +74,14 @@ impl KnpSolver {
         let Some(cell) = self.cell_at(pos) else {
             return false;
         };
+        self.add_capacitive_current_in_cell(cell, i_na);
+        true
+    }
+
+    /// [`add_capacitive_current`](Self::add_capacitive_current) by cell index.
+    pub fn add_capacitive_current_in_cell(&mut self, cell: usize, i_na: f64) {
         self.cap[cell] += na_to_rate(i_na, 1.0) * self.source_scale;
         self.mark_source(cell);
-        true
     }
 
     fn mark_source(&mut self, cell: usize) {
