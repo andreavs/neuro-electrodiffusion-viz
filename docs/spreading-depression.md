@@ -131,3 +131,79 @@ and 50 % of the slab.
   of what models use, and here the current is on the large dendrite as well as the soma. So
   read g_NaP as "how close to threshold the tissue is" rather than as a measured conductance.
 - The slab is 200 µm thick with closed boundaries, a stand-in for one layer of a larger tissue.
+
+## Comparison with Enger et al. (2015)
+
+Enger, Tang, Vindedal, …, Looger and Nagelhus, *Dynamics of ionic shifts in cortical spreading
+depression*, Cerebral Cortex 25:4469–4476 (2015),
+[PMC4816793](https://pmc.ncbi.nlm.nih.gov/articles/PMC4816793/). This is an experimental paper,
+not a model. In anaesthetised mice they triggered CSD with 1 M KCl on visual cortex and
+recorded, in layer 2/3, [K⁺]e with ion-sensitive microelectrodes, the DC potential, and
+two-photon Ca²⁺ (GCaMP6f in neurons or astrocytes) and glutamate (iGluSnFR). Their main
+numbers:
+
+| Measure | Enger et al. |
+|---|---|
+| Wave speed (neuronal Ca²⁺) | 56.7 ± 3.3 µm/s ≈ 3.4 mm/min (glutamate 3.1, astrocytic Ca²⁺ 3.3) |
+| [K⁺]e rise (0.25 mM onset) ahead of the DC shift | 5.9 ± 0.4 s |
+| [K⁺]e when the neuronal Ca²⁺ front arrives | 7.3 ± 0.6 mM |
+| Order of events | K⁺, DC shift, neuronal Ca²⁺ (+1.1 s), glutamate (+1.9 s), astrocytic Ca²⁺ (+4.0 s) |
+| Negative DC shift lasts | 66.4 ± 3.8 s |
+
+Their conclusion is that interstitial K⁺, not glutamate or astrocytic Ca²⁺ waves, leads the
+wave. That is the mechanism this model has by construction, so the question is how well its
+numbers match.
+
+`cargo run --release -p ed-knp --example sd_electrodes` places virtual electrodes about 210 and
+410 µm from the drive. At each, a K⁺ electrode in the soma layer (the grid cell at z = 50–75 µm)
+records the 0.25 mM onset, and the neurons with somata within 30 µm stand in for the imaged
+neurons: the depolarisation arrives when half their dendrites are above −40 mV (a proxy for
+the neuronal Ca²⁺ rise) and ends when fewer than a quarter are. The table gives values at the
+far electrode, 40 s runs:
+
+| g_NaP (mS/cm²) | driven | buffering (1/ms) | speed (mm/min) | K⁺ lead (s) | [K⁺]e at depolarisation (mM) | peak [K⁺]e (mM) | depolarisation lasts (s) | laminar Δφ (mV) |
+|---|---|---|---|---|---|---|---|---|
+| 0.25 | 1 | 0 | 5.8 | 0.05 | 3.4 | 29.3 | > 35.3 | −3.9 |
+| 0.2 | 10 | 0 | 3.5 | 0.32 | 4.0 | 27.4 | > 32.5 | −3.0 |
+| 0.15 | 100 | 0 | 2.0 | 1.36 | 5.6 | 25.1 | > 29.0 | −2.1 |
+| 0.25 | 1 | 0.0005 | 5.4 | 0.06 | 3.4 | 11.8 | 18.2 | −4.0 |
+| 0.2 | 10 | 0.0005 | 2.9 | 0.42 | 4.0 | 10.3 | 10.2 | −3.2 |
+| 0.15 | 100 | 0.0005 | – | – | – | 3.0 | – | 0.0 |
+
+Laminar Δφ is the most negative φ(dendrite layer, z = 150–175 µm) − φ(soma layer). It is a
+reference-free potential, used because the slab is too small for a remote reference that the
+wave never reaches. It is not the same quantity as a DC potential against a remote reference.
+
+What matches and what does not:
+
+1. **Speed matches.** At g_NaP = 0.2 the wave travels at 2.9–3.5 mm/min, as in the paper.
+2. **The K⁺ precursor is far too short.** Here [K⁺]e starts rising at most about 1.4 s before
+   the cells depolarise, and they depolarise at 3.4–5.6 mM. In the paper the K⁺ onset leads the
+   DC shift by 5.9 s and the neuronal Ca²⁺ rise (which follows the DC shift by about 1.1 s) by
+   about 7 s, and [K⁺]e is 7.3 mM when the neurons fire. Making the tissue less excitable
+   raises the threshold and the lead (g_NaP 0.15: 5.6 mM, 1.4 s) but slows the wave and soon
+   stops it.
+   This is a property of any front carried by K⁺ diffusion, not only of this model. Ahead of
+   such a front the K⁺ excess falls off as e^(−x/ℓ) with ℓ = D/v, where D = 1.96/1.6² ≈
+   0.77 µm²/ms is the effective K⁺ diffusion coefficient. At v = 3.4 mm/min that gives ℓ ≈
+   14 µm, and going from +0.25 to +4.3 mM (7.3 mM) takes (ℓ/v)·ln(4.3/0.25) ≈ 0.7 s, not 7 s.
+   A 7 s lead at that speed needs a decay length ℓ of about 140 µm, an effective spread about
+   10 times faster than extracellular K⁺ diffusion (the precursor then spans v·7 s ≈ 400 µm).
+   Candidates the model leaves out are astrocytic K⁺ spatial buffering through the
+   gap-junction syncytium, the wave arriving first in another layer and K⁺ reaching layer 2/3
+   from there, and the electrode sampling a different depth than the imaging plane. (This
+   estimate is ours, not the paper's.)
+3. **Recovery needs glia, and then peak [K⁺]e is low.** Without glial uptake the closed slab
+   never recovers, and [K⁺]e peaks at 25–29 mM. With uptake at 0.5/s the cells repolarise after
+   10–18 s, but [K⁺]e peaks near 11 mM, below the 30–60 mM usually reported for CSD (a
+   literature range; Enger et al. give no peak value). The paper's DC shift lasts 66 s.
+4. **The potential shift looks too small, but this is not a like-for-like comparison.** The
+   laminar Δφ is −2 to −4 mV, while DC shifts in CSD are typically −15 to −30 mV against a
+   remote reference (a literature range; Enger et al. give the duration, not the amplitude, in
+   the text we could read). The membranes here do not see φ and there are no glial currents,
+   both of which shape the DC shift.
+
+A closer replication would need astrocytes (K⁺ uptake and gap-junction redistribution, which
+targets finding 2 and the recovery time), a thicker, layered slab with an open boundary or a
+remote reference for the DC shift, and Ca²⁺ and glutamate signals if the timing of those is to
+be compared.
