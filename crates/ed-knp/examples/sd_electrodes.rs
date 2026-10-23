@@ -20,11 +20,14 @@ struct Case {
 
 /// Drive on each driven soma, nS (as in `spreading_scan`).
 const DRIVE_NS: f64 = 20.0;
-/// Electrode distances from the drive along x, µm.
-const R: [f64; 2] = [200.0, 400.0];
+/// Electrode distances from the drive along x and their offset in y, µm. With the default
+/// 25 µm grid these, and the depths below, put each electrode at the centre of a grid cell, so
+/// the K⁺ it reads is centred on the neurons it is compared with.
+const R: [f64; 2] = [212.5, 412.5];
+const Y_OFF: f64 = 12.5;
 /// Depths of the soma and dendrite layers, µm.
-const Z_SOMA: f64 = 50.0;
-const Z_DEND: f64 = 150.0;
+const Z_SOMA: f64 = 62.5;
+const Z_DEND: f64 = 162.5;
 /// Neurons whose soma lies within this horizontal distance of an electrode report to it, µm.
 const NEAR: f64 = 30.0;
 /// [K⁺]e rise that marks the K⁺ onset, mM (Enger et al.'s threshold).
@@ -53,7 +56,7 @@ fn run(c: &Case, ms: f64) -> Vec<Electrode> {
     cfg.buffering = c.buffering;
     let size = cfg.knp.size;
     let mut t = SdTissue::new(&cfg);
-    let centre = [size[0] / 2.0, size[1] / 2.0, Z_SOMA];
+    let centre = [size[0] / 2.0, size[1] / 2.0 + Y_OFF, Z_SOMA];
     t.set_drive(centre, c.driven, DRIVE_NS);
     let at = |t: &SdTissue, r: f64, z: f64| t.knp.cell_at([centre[0] + r, centre[1], z]).unwrap();
     let soma = R.map(|r| at(&t, r, Z_SOMA));
@@ -129,7 +132,8 @@ fn main() {
         }
     });
 
-    // Times at the far electrode, which sits in tissue the wave reached on its own.
+    // Times at the far electrode, which sits in tissue the wave reached on its own. A negative
+    // K⁺ lead means the neurons depolarised before [K⁺]e rose by 0.25 mM.
     let s = |t: f64| format!("{:.1}", t / 1e3);
     println!("| g_NaP (mS/cm²) | driven | buffering (1/ms) | speed (mm/min) | K⁺ lead (s) | [K⁺]e at depolarisation (mM) | peak [K⁺]e (mM) | depolarisation lasts (s) | laminar Δφ (mV) |");
     println!("|---|---|---|---|---|---|---|---|---|");
@@ -142,7 +146,8 @@ fn main() {
                 near.t_dep.map_or("–".into(), |tn| {
                     format!("{:.1}", (R[1] - R[0]) / (td - tn) * 60.0)
                 }),
-                far.t_k.map_or("–".into(), |tk| s(td - tk)),
+                far.t_k
+                    .map_or("–".into(), |tk| format!("{:.2}", (td - tk) / 1e3)),
                 format!("{:.1}", far.k_dep),
                 far.t_rec
                     .map_or(format!("> {}", s(ms - td)), |tr| s(tr - td)),
