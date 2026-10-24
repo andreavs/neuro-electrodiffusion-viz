@@ -36,6 +36,7 @@ pub mod cell;
 mod diffusion;
 mod electroneutral;
 pub mod fv;
+pub mod glia;
 pub mod hay;
 pub mod neuron;
 pub mod population;
@@ -120,7 +121,9 @@ pub struct KnpSolver {
     cap: Vec<f64>,
     has_source: Vec<bool>,
     source_cells: Vec<usize>,
-    /// 1 / (α · cell volume): converts an amount rate to a concentration rate.
+    /// Volume fraction α, and 1 / (α · cell volume), which converts an amount rate to a
+    /// concentration rate.
+    porosity: f64,
     source_scale: f64,
     diffusion: Diffusion,
     projection: Projection,
@@ -176,6 +179,7 @@ impl KnpSolver {
             cap: vec![0.0; len],
             has_source: vec![false; len],
             source_cells: Vec::new(),
+            porosity: cfg.porosity,
             source_scale: 1.0 / (cfg.porosity * h[0] * h[1] * h[2]),
             model,
         }
@@ -221,6 +225,16 @@ impl KnpSolver {
     /// Statistics of the last potential solve.
     pub fn last_solve(&self) -> CgStats {
         self.projection.last_solve()
+    }
+
+    /// Writes the electrical conductivity per tissue volume, `α Σ_k D̃_k z_k² c_k / ψ`, into
+    /// `out`, in the units of the potential equation (mM·µm²/(mV·ms): divided by F).
+    pub(crate) fn conductivity(&self, out: &mut [f64]) {
+        out.fill(0.0);
+        for ((c, d), z) in self.c.iter().zip(&self.model.d).zip(&self.model.z) {
+            let s = self.porosity * d * z * z / self.model.psi;
+            out.iter_mut().zip(c).for_each(|(o, c)| *o += s * c);
+        }
     }
 }
 
