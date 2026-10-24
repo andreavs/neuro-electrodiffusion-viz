@@ -225,7 +225,9 @@ from a cable equation through the gap-junction-coupled interior, and the membran
 ions between the two domains. In Halnes et al.'s own setting (a 300 µm column with K⁺ released
 at one end, `glia::tests`) the astrocytes take up K⁺ at the source (peak [K⁺]e 10 instead of
 16 mM) and release it 100–300 µm away, where extracellular diffusion alone has not yet
-arrived. Cutting the gap junctions removes the effect.
+arrived. Cutting the gap junctions removes the effect. In the web view (`#/knp/spreading`) the
+*Astrocytes* and *Gap junctions* controls set the membrane area and coupling, and the shown
+field can be the astrocytes' membrane potential or [K⁺].
 
 The runs of `sd_electrodes` with astrocytes, each next to the same drive without them (40 s,
 far electrode, no KCl uptake; membrane area in µm² per µm³ of tissue, Halnes et al.'s is 8):

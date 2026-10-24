@@ -47,8 +47,9 @@ export function createSpreadingView(): ScaleView {
               up from the shared extracellular space. One neuron near the centre is driven hard. Its K⁺ raises the
               [K⁺]e around it; if that depolarises the neighbours enough that they release K⁺ faster than their
               pumps and diffusion can clear it, a self-sustaining wave of depolarisation spreads through the slab.
-              Lower the persistent Na⁺ current or strengthen the pump to see the threshold. The findings of a
-              parameter scan are in
+              Lower the persistent Na⁺ current or strengthen the pump to see the threshold. Turn on the
+              astrocytes to add an astrocytic syncytium that takes up K⁺ and spreads it through gap junctions. The
+              findings of a parameter scan are in
               <a href="https://github.com/andreavs/neuro-electrodiffusion-viz/blob/main/docs/spreading-depression.md"
                 target="_blank" rel="noopener">docs/spreading-depression.md</a>.</p>
           </header>

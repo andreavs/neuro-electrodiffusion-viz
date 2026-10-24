@@ -1,4 +1,4 @@
-import { SD_FIELDS, SD_PARAMS, SD_REBUILD_KEYS } from '../../scales/knp/spreading-params';
+import { SD_FIELDS, SD_GLIA_FIELDS, SD_PARAMS, SD_REBUILD_KEYS } from '../../scales/knp/spreading-params';
 import { defaultParams } from '../../ui/controls';
 import { SdSim } from '../../wasm/pkg/ed_wasm.js';
 import type { Params } from '../protocol';
@@ -23,7 +23,7 @@ export interface SdWasm {
   free(): void;
 }
 
-export type SdCreate = (seed: number, neurons: number, gNap: number) => SdWasm;
+export type SdCreate = (seed: number, neurons: number, gNap: number, glia: number, coupling: number) => SdWasm;
 
 /**
  * Counts builds across all adapters, so a view sees a new generation after a reset or a new
@@ -64,7 +64,13 @@ export function makeSpreadingSolver(
   };
   /** Builds a new tissue; the old one is kept if that fails. */
   const build = () => {
-    const next = create(1, count('neurons', params.neurons), Number(params.gNap));
+    const next = create(
+      1,
+      count('neurons', params.neurons),
+      Number(params.gNap),
+      Number(params.glia),
+      Number(params.coupling),
+    );
     try {
       applyRuntime(next, params);
     } catch (err) {
@@ -85,7 +91,10 @@ export function makeSpreadingSolver(
     const old = { ...params };
     Object.assign(params, p);
     try {
-      if (SD_REBUILD_KEYS.some((k) => k in p && p[k] !== old[k])) build();
+      // Without astrocytes the coupling has nothing to act on.
+      const rebuilds = (k: (typeof SD_REBUILD_KEYS)[number]) =>
+        k in p && p[k] !== old[k] && (k !== 'coupling' || Number(params.glia) > 0);
+      if (SD_REBUILD_KEYS.some(rebuilds)) build();
       else applyRuntime(sim!, p);
     } catch (err) {
       Object.assign(params, old);
@@ -114,8 +123,11 @@ export function makeSpreadingSolver(
       const [nx, ny, nz] = sim.shape();
       const [sx, sy, sz] = sim.size();
       const v = sim.v_soma();
+      const field = String(params.field);
+      const glial = (SD_GLIA_FIELDS as readonly string[]).includes(field) && !(Number(params.glia) > 0);
+      const shown = glial ? 'k' : field;
       const fields = [
-        { name: String(params.field), shape: [nx!, ny!, nz!], data: sim.field(String(params.field)) },
+        { name: shown, shape: [nx!, ny!, nz!], data: sim.field(shown) },
         { name: 'v', shape: [v.length], data: v },
       ];
       // Positions only change with a build, the driven set with the drive.
@@ -152,4 +164,7 @@ export function makeSpreadingSolver(
 }
 
 export const createSpreadingSolver: SolverFactory = (params) =>
-  makeSpreadingSolver(params, (seed, neurons, gNap) => new SdSim(seed, neurons, gNap));
+  makeSpreadingSolver(
+    params,
+    (seed, neurons, gNap, glia, coupling) => new SdSim(seed, neurons, gNap, glia, coupling),
+  );
