@@ -12,11 +12,12 @@
 //! - Na⁺/K⁺ pump: `I_p = P_max [Na]i^1.5 / ([Na]i^1.5 + K_Na^1.5) · [K]e / ([K]e + K_K)`,
 //!   3 Na⁺ out and 2 K⁺ in per cycle.
 //!
-//! The conductances and pump constants are Halnes et al.'s. As for the neurons
-//! ([`crate::population`]), `P_max` and the resting potential are not free: they are set so
-//! that the baseline concentrations are an exact ionic steady state, and `[Cl⁻]i` so that
-//! `E_Cl` equals the resting potential. With the default concentrations that gives
-//! V_rest ≈ −85 mV and `P_max` ≈ 11.4 µA/cm², close to Halnes et al.'s −84 mV and 10.8 µA/cm².
+//! The conductances and pump constants are Halnes et al.'s. The resting potential and `P_max`
+//! are not free: they are set so that the baseline concentrations are an exact ionic steady
+//! state, and `[Cl⁻]i` so that `E_Cl` equals the resting potential (the neurons of
+//! [`crate::population`] calibrate `P_max` and `[Cl⁻]i` the same way, but take V_rest as
+//! given). With the default concentrations that gives V_rest ≈ −85 mV and
+//! `P_max` ≈ 11.4 µA/cm², close to the −83.6 mV and 10.8 µA/cm² of Halnes et al.'s code.
 
 use ed_core::constants::{psi_mv, T_DEFAULT};
 
@@ -34,8 +35,9 @@ pub struct AstrocyteParams {
     pub g_leak_cl: f64,
     /// Membrane capacitance, µF/cm².
     pub c_m: f64,
-    /// Pump half-saturation by intracellular Na⁺ and by extracellular K⁺, mM.
+    /// Pump half-saturation by intracellular Na⁺, mM.
     pub pump_km_na: f64,
+    /// Pump half-saturation by extracellular K⁺, mM.
     pub pump_km_k: f64,
     /// Multiplies the calibrated pump capacity (1 = baseline is a steady state).
     pub pump_scale: f64,
@@ -91,6 +93,14 @@ impl AstrocyteParams {
     /// Finds the resting potential at which K⁺ and Na⁺ balance (Kir K⁺ out = 2 pump K⁺ in,
     /// leak Na⁺ in = 3 pump Na⁺ out), then the pump capacity and [Cl⁻]i that go with it.
     pub fn calibrate(&self) -> AstrocyteCalibration {
+        assert!(
+            self.g_kir > 0.0 && self.g_leak_na > 0.0,
+            "the resting state needs both a K⁺ and a Na⁺ conductance"
+        );
+        assert!(
+            self.ecs.iter().chain(&self.ics).all(|&c| c > 0.0),
+            "baseline concentrations must be positive"
+        );
         let psi = psi_mv(self.temperature);
         let [na_e, k_e, x_e] = self.ecs;
         let [na_i, k_i] = self.ics;
@@ -116,9 +126,11 @@ impl AstrocyteParams {
         }
         let v = 0.5 * (lo + hi);
         let pump = -self.g_leak_na * (v - e_na) / 3.0;
+        let p_max = pump / self.pump_fraction(k_e, na_i);
+        assert!(p_max.is_finite() && p_max > 0.0, "pump capacity {p_max}");
         AstrocyteCalibration {
             v_rest: v,
-            p_max: pump / self.pump_fraction(k_e, na_i),
+            p_max,
             cl_i: x_e * (v / psi).exp(),
         }
     }
@@ -139,6 +151,7 @@ pub fn kir_factor(v: f64, e_k: f64, k_ratio: f64, e_k0: f64) -> f64 {
 }
 
 impl AstrocyteMembrane {
+    /// The membrane with `params`, calibrated (see [`AstrocyteParams::calibrate`]).
     pub fn new(params: AstrocyteParams) -> Self {
         let cal = params.calibrate();
         let psi = psi_mv(params.temperature);
@@ -155,6 +168,7 @@ impl AstrocyteMembrane {
         &self.params
     }
 
+    /// The resting state the membrane was calibrated to.
     pub fn calibration(&self) -> AstrocyteCalibration {
         self.cal
     }
@@ -232,11 +246,7 @@ mod tests {
             let gs: f64 = g.iter().sum();
             let ge: f64 = (0..3).map(|k| g[k] * e[k]).sum();
             self.v = (c / dt * self.v + ge - pump) / (c / dt + gs);
-            let i = [
-                g[0] * (self.v - e[0]) + 3.0 * pump,
-                g[1] * (self.v - e[1]) - 2.0 * pump,
-                g[2] * (self.v - e[2]),
-            ];
+            let i = self.m.currents(self.v, ecs, self.ics);
             // 1 µA/cm² = 1e-17 C/(ms·µm²) and 1 mM = 1e-18 mol/µm³.
             let to_mm = 10.0 * dt / (F * self.vol_per_area);
             self.ics[0] -= i[0] * to_mm;
@@ -255,7 +265,7 @@ mod tests {
             assert!(ik.abs() < 1e-9, "{i:?}");
         }
         // About −85 mV, a few mV above E_K, and a pump near Halnes et al.'s 10.8 µA/cm².
-        let e_k = psi_mv(p.temperature) * (3.0f64 / 101.2).ln();
+        let e_k = psi_mv(p.temperature) * (p.ecs[1] / p.ics[1]).ln();
         assert!(
             c.v_rest > e_k && c.v_rest < e_k + 10.0,
             "V_rest {}",
@@ -288,22 +298,26 @@ mod tests {
             a.step(1.0, p.ecs);
         }
         assert!((a.v - v0).abs() < 1e-9, "V {} vs {v0}", a.v);
-        assert!((a.ics[1] - p.ics[1]).abs() < 1e-9);
+        let cl_i = a.m.calibration().cl_i;
+        for (c, c0) in a.ics.iter().zip([p.ics[0], p.ics[1], cl_i]) {
+            assert!((c - c0).abs() < 1e-9, "{:?}", a.ics);
+        }
     }
 
     #[test]
     fn raised_potassium_depolarises_and_is_taken_up() {
-        // Halnes et al. (Fig. 4): ~10 mM in the input zone depolarised the astrocyte to −59 mV.
         let p = AstrocyteParams::default();
         let mut a = Point::new(p.clone());
         let ecs = [143.0, 10.0, 155.8];
-        let k0 = a.ics[1];
+        let (k0, cl0) = (a.ics[1], a.ics[2]);
         for _ in 0..20_000 {
             a.step(1.0, ecs);
         }
         let i = a.m.currents(a.v, ecs, a.ics);
         assert!(a.v > -75.0 && a.v < -50.0, "V {}", a.v);
         assert!(a.ics[1] > k0 + 1.0, "K⁺i {} vs {k0}", a.ics[1]);
+        // The depolarisation pulls Cl⁻ in along with the K⁺.
+        assert!(a.ics[2] > cl0 + 1.0, "Cl⁻i {} vs {cl0}", a.ics[2]);
         // Still taking up K⁺ (inward current) after 20 s.
         assert!(i[1] < 0.0, "I_K {}", i[1]);
     }
