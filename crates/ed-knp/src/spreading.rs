@@ -7,8 +7,9 @@
 //! cells: the only interaction is through the extracellular concentrations (the membranes do
 //! not see the extracellular potential). Optional glial buffering takes up K⁺ together with
 //! X⁻ (as KCl, so it carries no current) at a rate proportional to the excess over baseline;
-//! it never releases K⁺ where [K⁺]e is below baseline. Optional astrocytes ([`crate::glia`])
-//! instead take up and redistribute K⁺ through their own membrane and syncytium.
+//! it never releases K⁺ where [K⁺]e is below baseline. Optional astrocytes ([`crate::glia`]),
+//! with or without that uptake, take up and redistribute K⁺ through their own membrane and
+//! syncytium.
 //!
 //! Some neurons near the centre can be driven by an extra Na⁺ conductance on their soma
 //! ([`SdTissue::set_drive`]). The question is whether that local K⁺ release can push the
@@ -251,10 +252,14 @@ mod tests {
         let h = t.knp.grid().h;
         let ecs: f64 =
             t.knp.concentration(ion).iter().sum::<f64>() * h[0] * h[1] * h[2] * cfg.knp.porosity;
-        let glia = t.glia.as_ref().map_or(0.0, |g| {
-            let s = g.interior();
-            s.concentration(ion).iter().sum::<f64>() * h[0] * h[1] * h[2] * s.porosity
-        });
+        let glia = t
+            .glia
+            .as_ref()
+            .zip(cfg.glia.as_ref())
+            .map_or(0.0, |(g, c)| {
+                let s = g.interior().concentration(ion);
+                s.iter().sum::<f64>() * h[0] * h[1] * h[2] * c.volume_fraction
+            });
         let p = &cfg.population;
         let inside = match ion {
             NA => t.pop.na_i(),

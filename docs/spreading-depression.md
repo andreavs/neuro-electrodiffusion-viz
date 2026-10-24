@@ -227,36 +227,47 @@ at one end, `glia::tests`) the astrocytes take up K⁺ at the source (peak [K⁺
 16 mM) and release it 100–300 µm away, where extracellular diffusion alone has not yet
 arrived. Cutting the gap junctions removes the effect.
 
-The runs of `sd_electrodes` with astrocytes, against the same drive without them (40 s, far
-electrode; membrane area in µm² per µm³ of tissue, Halnes et al.'s is 8):
+The runs of `sd_electrodes` with astrocytes, each next to the same drive without them (40 s,
+far electrode, no KCl uptake; membrane area in µm² per µm³ of tissue, Halnes et al.'s is 8):
 
 | g_NaP (mS/cm²) | driven | glia (µm⁻¹, coupling) | speed (mm/min) | K⁺ lead (s) | [K⁺]e at depolarisation (mM) | peak [K⁺]e (mM) | depolarisation lasts (s) | laminar Δφ (mV) |
 |---|---|---|---|---|---|---|---|---|
+| 0.3 | 100 | – | 9.6 | −0.04 | 3.1 | 31.0 | > 37.8 | −4.7 |
 | 0.3 | 100 | 8, 1 | 17.2 | −0.02 | 3.2 | 13.4 | > 38.7 | −4.3 |
+| 0.25 | 400 | – | 5.8 | 0.06 | 3.4 | 29.4 | > 36.9 | −3.9 |
 | 0.25 | 400 | 8, 1 | 6.0 | 0.16 | 3.4 | 12.6 | > 36.8 | −3.0 |
 | 0.2 | 100 | – | 3.5 | 0.36 | 4.1 | 27.4 | > 33.8 | −3.0 |
+| 0.2 | 100 | 8, 1 | – | – | – | 3.1 | – | 0.0 |
 | 0.2 | 100 | 1, 1 | 4.8 | 0.86 | 4.2 | 12.9 | > 34.6 | −1.8 |
 | 0.2 | 100 | 1, 0.01 | 2.5 | 0.54 | 4.1 | 17.1 | > 31.6 | −3.1 |
 
-1. **Halnes et al.'s astrocytes nearly stop the wave.** At their membrane density the
-   astrocytes take up K⁺ so fast that two driven cells raise [K⁺]e to 3.4 mM in the first
-   second instead of 11.5 mM (test `astrocytes_conserve_ions_and_take_up_the_released_potassium`).
-   A wave still started only in the most excitable tissue: g_NaP = 0.3, or 0.25 with 400 driven
-   cells. It did not start at 0.25 with one driven cell, at 0.2 with 100, or with half the
-   density at 0.15–0.25. Where it runs, [K⁺]e peaks at about 13 mM, below the 30–60 mM usually
-   reported for CSD.
+1. **Halnes et al.'s astrocytes raise the ignition threshold.** At their membrane density the
+   astrocytes take up K⁺ fast. In the 200 µm test box at g_NaP = 0.25, two driven cells raise
+   [K⁺]e to 3.4 mM in the first second with astrocytes and to 11.5 mM without, where the
+   tissue is already igniting (test
+   `astrocytes_conserve_ions_and_take_up_the_released_potassium`). A wave then starts only in
+   the most excitable tissue: g_NaP = 0.3, or 0.25 with 400 driven cells, but not 0.2 with 100.
+   In exploratory runs outside the example (12–20 s), it also did not start at 0.25 with one
+   driven cell, or with 4 µm⁻¹ at 0.25/1, 0.2/100 and 0.15/400. Once a wave runs, the
+   astrocytes do not slow it. [K⁺]e then peaks at about 13 mM instead of 30, below the
+   30–60 mM usually reported for CSD.
 2. **They lengthen the K⁺ precursor, but not nearly enough.** With an eighth of that density, at
    g_NaP = 0.2 and the same 100 driven cells, the K⁺ lead grows from 0.36 to 0.86 s, and the
-   precursor in space (lead × speed) from 21 to 69 µm. Enger et al.'s is 5.9 s, or about
-   340 µm. The neurons still depolarise at about 4 mM, because the neurons set that threshold.
-   A lead of seconds needs neurons that hold out to about 7 mM while the wave still
-   propagates. Without astrocytes that happens at g_NaP = 0.1 with twice the neuron density:
-   a 1.6 s lead at 7.2 mM, 1.9 mm/min, in a 15 s exploratory run. In the runs we tried at that
-   density, no wave started once astrocytes were added.
+   precursor in space (lead × speed) from 21 to 69 µm. Enger et al.'s K⁺ onset comes about 7 s
+   before the neuronal Ca²⁺ rise, about 400 µm, and 5.9 s (335 µm) before the DC shift. The
+   neurons still depolarise at about 4 mM, because the neurons set that threshold. A lead of
+   seconds needs neurons that hold out to about 7 mM while the wave still propagates. Without
+   astrocytes that happens at g_NaP = 0.1 with twice the neuron density: a 1.6 s lead at
+   7.2 mM, 1.9 mm/min, in a 15 s exploratory run. With astrocytes at 8 or 2 µm⁻¹ at that
+   density, no wave started at g_NaP 0.1–0.25 in exploratory runs.
 3. **The syncytium speeds the wave up, while experiments suggest the opposite.** Coupled
-   astrocytes carry K⁺ ahead of the front, so the wave runs at 4.8 mm/min. It runs at 2.5 with
-   the coupling cut to 1 %, and at 3.5 without astrocytes. In mice whose astrocytes lack Cx43,
-   SD instead propagates about 20 % faster (Theis et al. 2003, J Neurosci 23:766). This model
+   astrocytes carry K⁺ ahead of the front. At 1 µm⁻¹ the wave runs at 4.8 mm/min, against 2.5
+   with the coupling cut to 1 % and 3.5 without astrocytes. At Halnes et al.'s density and
+   g_NaP = 0.3 it runs at 17.2 mm/min instead of 9.6. In mice whose astrocytes lack Cx43, SD
+   instead propagates about 20 % faster (Theis et al. 2003, J Neurosci 23:766). This model
    leaves out whatever makes coupling slow SD down.
 4. **Astrocytes do not end the depolarisation.** They redistribute K⁺ but remove none, so the
    closed slab still does not recover within 40 s. Only the KCl uptake option lets it recover.
+5. **They make the laminar Δφ smaller, not larger:** −1.8 to −4.3 mV, against −3.0 to
+   −4.7 mV without them at the same drive. Their currents do not bring the potential shift
+   closer to the −15 to −30 mV of CSD recordings in this slab.

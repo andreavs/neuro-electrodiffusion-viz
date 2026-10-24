@@ -4,7 +4,7 @@
 //! wave speed, the extracellular potential shift and how long the depolarisation lasts, with
 //! and without astrocytes ([`ed_knp::glia`]). Prints a Markdown table.
 //!
-//! `cargo run --release -p ed-knp --example sd_electrodes` (a few minutes; runs in parallel
+//! `cargo run --release -p ed-knp --example sd_electrodes` (about ten minutes; runs in parallel
 //! on all cores). `SD_MS` sets the simulated time per run (default 40000 ms).
 use ed_core::Simulation;
 use ed_knp::glia::GliaConfig;
@@ -125,12 +125,16 @@ fn main() {
             });
         }
     }
-    // Astrocytes: Halnes et al.'s membrane density only lets the most excitable tissue
-    // ignite; an eighth of it, with and without gap junctions, against the same drive alone.
+    // Astrocytes, each against the same drive without them: Halnes et al.'s membrane density
+    // only lets the most excitable tissue ignite; an eighth of it, with and without gap
+    // junctions.
     for (g_nap, driven, glia) in [
+        (0.3, 100, None),
         (0.3, 100, Some((8.0, 1.0))),
+        (0.25, 400, None),
         (0.25, 400, Some((8.0, 1.0))),
         (0.2, 100, None),
+        (0.2, 100, Some((8.0, 1.0))),
         (0.2, 100, Some((1.0, 1.0))),
         (0.2, 100, Some((1.0, 0.01))),
     ] {
