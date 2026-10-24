@@ -3,12 +3,12 @@
 //! [`crate::astrocyte`], after the model of Halnes et al. (2013).
 //!
 //! Every grid cell holds both domains: the extracellular space of the [`KnpSolver`] the
-//! astrocytes are attached to, and astrocytic interior with volume fraction α_g, joined by gap
+//! astrocytes are attached to, and the astrocytic interior with volume fraction α_g, joined by gap
 //! junctions into one syncytium. The interior is a [`KnpSolver`] of its own on the same grid,
 //! with Na⁺, K⁺ and Cl⁻ (at the indices [`NA`], [`K`] and [`X`]) and tortuosity λ_g. Each step:
 //!
 //! 1. The membrane potential V solves the cable equation, backward Euler with the chord
-//!    conductances at the old V frozen over the step:
+//!    conductances (at the old V), reversal potentials and pump frozen over the step:
 //!    `a C_m ∂V/∂t + a [Σ_k g_k (V − E_k) + I_p] = ∇·(σ_m ∇V)`, `σ_m = σ_g σ_E / (σ_g + σ_E)`,
 //!    where `a` is the membrane area per tissue volume and σ_g, σ_E are the conductivities of
 //!    the two domains per tissue volume. This is the bidomain model reduced to one equation,
@@ -18,6 +18,10 @@
 //!    with opposite signs, so every ion that leaves the astrocytes enters the extracellular
 //!    space of the same grid cell and both domains stay electroneutral.
 //! 3. The interior takes a KNP step. The caller then steps the extracellular solver.
+//!
+//! The membrane currents use the concentrations at the start of the step, so a step must not
+//! move a sizeable part of the extracellular K⁺: with the defaults, steps above about 60 ms
+//! make [K⁺]e overshoot.
 //!
 //! This gives spatial buffering: where [K⁺]e is high, E_K rises above V and K⁺ flows in; the
 //! depolarisation spreads along the syncytium, and where [K⁺]e is at baseline the depolarised
@@ -170,7 +174,7 @@ impl Glia {
     /// of `ecs` before calling, and step `ecs` afterwards.
     pub fn step(&mut self, ecs: &mut KnpSolver) {
         let len = self.v.len();
-        assert_eq!(ecs.grid().n, self.interior.grid().n, "grids must match");
+        assert!(ecs.grid() == self.interior.grid(), "grids must match");
         let dt = ecs.dt();
         if self.interior.dt() != dt {
             self.interior.set_dt(dt);
@@ -291,9 +295,10 @@ mod tests {
             let cell = h[0] * h[1] * h[2];
             let sum = |s: &KnpSolver, k: usize| s.concentration(k).iter().sum::<f64>() * cell;
             [NA, K, X].map(|k| {
-                let glia = self.glia.as_ref().map_or(0.0, |g| {
-                    GliaConfig::default().volume_fraction * sum(g.interior(), k)
-                });
+                let glia = self
+                    .glia
+                    .as_ref()
+                    .map_or(0.0, |g| g.interior.porosity * sum(g.interior(), k));
                 self.cfg.porosity * sum(&self.ecs, k) + glia
             })
         }
@@ -387,6 +392,49 @@ mod tests {
             (dv - dknp).abs() < 0.1 * dv,
             "ΔV {dv} vs Δ(φ_g − φ_E) {dknp}"
         );
+    }
+
+    #[test]
+    fn membrane_charge_sits_on_the_capacitor() {
+        // Dirichlet ends, which hold V at rest beyond the input.
+        let cfg = KnpConfig {
+            boundary: Boundary::Dirichlet,
+            ..column(10.0)
+        };
+        let mut t = Tissue::new(cfg.clone(), Some(GliaConfig::default()));
+        t.step(4.0, true);
+        let g = t.glia.as_ref().unwrap();
+        let (v, m) = (g.potential(), g.membrane());
+        let v_rest = m.calibration().v_rest;
+        assert!(v[0] < v[2] && v[2] > v_rest + 3.0, "{v:?}");
+        // The charge each domain gained (mM per tissue volume) is the plate charge a C_m ΔV.
+        let a = GliaConfig::default().area_per_volume;
+        let charge = |s: &KnpSolver, z: &[f64], p: usize| {
+            s.porosity
+                * z.iter()
+                    .enumerate()
+                    .map(|(k, z)| z * s.concentration(k)[p])
+                    .sum::<f64>()
+        };
+        let z_ecs: Vec<f64> = cfg.species.iter().map(|s| s.z as f64).collect();
+        let [na_i, k_i] = m.params().ics;
+        let rho_g0 = g.interior().porosity * (na_i + k_i - m.calibration().cl_i);
+        let plate = |p: usize| 10.0 * a * m.params().c_m * (v[p] - v_rest) / F;
+        let max = plate(2);
+        for p in 0..30 {
+            let ecs = charge(&t.ecs, &z_ecs, p);
+            let glia = charge(g.interior(), &[1.0, 1.0, -1.0], p) - rho_g0;
+            assert!(
+                (ecs + plate(p)).abs() < 0.01 * max,
+                "cell {p}: {ecs} vs {}",
+                plate(p)
+            );
+            assert!(
+                (glia - plate(p)).abs() < 0.01 * max,
+                "cell {p}: {glia} vs {}",
+                plate(p)
+            );
+        }
     }
 
     #[test]
