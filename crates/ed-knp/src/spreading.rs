@@ -7,12 +7,14 @@
 //! cells: the only interaction is through the extracellular concentrations (the membranes do
 //! not see the extracellular potential). Optional glial buffering takes up K⁺ together with
 //! X⁻ (as KCl, so it carries no current) at a rate proportional to the excess over baseline;
-//! it never releases K⁺ where [K⁺]e is below baseline.
+//! it never releases K⁺ where [K⁺]e is below baseline. Optional astrocytes ([`crate::glia`])
+//! instead take up and redistribute K⁺ through their own membrane and syncytium.
 //!
 //! Some neurons near the centre can be driven by an extra Na⁺ conductance on their soma
 //! ([`SdTissue::set_drive`]). The question is whether that local K⁺ release can push the
 //! neighbours over threshold so that the depolarisation spreads on its own.
 
+use crate::glia::{Glia, GliaConfig};
 use crate::population::{Population, PopulationParams};
 use crate::tissue::{K, NA, X};
 use crate::{KnpConfig, KnpSolver};
@@ -33,6 +35,8 @@ pub struct SdConfig {
     pub dendrite_offset: [f64; 3],
     /// Glial KCl uptake rate, 1/ms (0 = none).
     pub buffering: f64,
+    /// An astrocytic syncytium in the tissue (spatial buffering), or none.
+    pub glia: Option<GliaConfig>,
     /// Seed for placing the neurons.
     pub seed: u64,
 }
@@ -56,6 +60,7 @@ impl Default for SdConfig {
             },
             dendrite_offset: [0.0, 0.0, 100.0],
             buffering: 0.0,
+            glia: None,
             seed: 1,
         }
     }
@@ -69,6 +74,8 @@ pub struct SdTissue {
     /// Grid cell of each compartment.
     cells: Vec<usize>,
     buffering: f64,
+    /// The astrocytic syncytium, if configured.
+    pub glia: Option<Glia>,
     baseline: [f64; 3],
     /// α × cell volume, µm³: converts a concentration rate into an amount rate.
     cell_volume: f64,
@@ -123,6 +130,7 @@ impl SdTissue {
             positions,
             cells,
             buffering: cfg.buffering,
+            glia: cfg.glia.as_ref().map(|g| Glia::new(g, &cfg.knp)),
             baseline: [b[NA], b[K], b[X]],
             cell_volume: cfg.knp.porosity * h[0] * h[1] * h[2],
             driven: Vec::new(),
@@ -206,6 +214,9 @@ impl Simulation for SdTissue {
                     s.add_ion_source_in_cell(cell, X, uptake);
                 }
             }
+            if let Some(g) = self.glia.as_mut() {
+                g.step(s);
+            }
             s.step(1);
         }
     }
@@ -234,12 +245,16 @@ mod tests {
         cfg
     }
 
-    /// Total amount of one species in the extracellular space and the cells, mM·µm³
-    /// (X⁻ outside pairs with Cl⁻ inside).
+    /// Total amount of one species in the extracellular space, the neurons and the astrocytes,
+    /// mM·µm³ (X⁻ outside pairs with Cl⁻ inside).
     fn amount(t: &SdTissue, cfg: &SdConfig, ion: usize) -> f64 {
         let h = t.knp.grid().h;
         let ecs: f64 =
             t.knp.concentration(ion).iter().sum::<f64>() * h[0] * h[1] * h[2] * cfg.knp.porosity;
+        let glia = t.glia.as_ref().map_or(0.0, |g| {
+            let s = g.interior();
+            s.concentration(ion).iter().sum::<f64>() * h[0] * h[1] * h[2] * s.porosity
+        });
         let p = &cfg.population;
         let inside = match ion {
             NA => t.pop.na_i(),
@@ -251,7 +266,7 @@ mod tests {
             .enumerate()
             .map(|(c, x)| x * p.volume[c % 2])
             .sum();
-        ecs + ics
+        ecs + ics + glia
     }
 
     #[test]
@@ -293,6 +308,39 @@ mod tests {
         t.step(100);
         let (dk, dx) = (k1 - amount(&t, &cfg, K), x1 - amount(&t, &cfg, X));
         assert!(dk > 0.0 && (dk - dx).abs() < 1e-9 * k1, "{dk} vs {dx}");
+    }
+
+    #[test]
+    fn astrocytes_conserve_ions_and_take_up_the_released_potassium() {
+        let run = |glia: Option<GliaConfig>| {
+            let cfg = SdConfig {
+                glia,
+                ..small(0.25)
+            };
+            let mut t = SdTissue::new(&cfg);
+            t.set_drive([100.0, 100.0, 50.0], 2, 20.0);
+            let before = [NA, K, X].map(|ion| amount(&t, &cfg, ion));
+            t.step(250);
+            for (ion, a0) in [NA, K, X].into_iter().zip(before) {
+                let a1 = amount(&t, &cfg, ion);
+                assert!((a1 - a0).abs() < 1e-9 * a0, "species {ion}: {a0} → {a1}");
+            }
+            let k_max = t
+                .knp
+                .concentration(K)
+                .iter()
+                .fold(0.0, |m: f64, &c| m.max(c));
+            (t, k_max)
+        };
+        let (_, bare) = run(None);
+        let (t, glia) = run(Some(GliaConfig::default()));
+        assert!(
+            bare > 4.0 && glia < 3.0 + 0.5 * (bare - 3.0),
+            "{bare} vs {glia}"
+        );
+        let g = t.glia.as_ref().unwrap();
+        let k_i = g.interior().concentration(K);
+        assert!(k_i.iter().any(|&k| k > g.membrane().params().ics[1] + 0.1));
     }
 
     #[test]
