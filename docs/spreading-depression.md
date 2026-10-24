@@ -34,6 +34,11 @@ real spreading depression is 2–9 mm/min), with peak [K⁺]e near 37 mM.
 - **"Depolarised":** dendrite above −40 mV.
 - **Glial buffering (optional):** KCl is taken up wherever [K⁺]e exceeds baseline, at a rate
   proportional to the excess (exact relaxation over each step, never below baseline).
+- **Astrocytes (optional, `SdConfig::glia`):** an astrocytic syncytium in every grid cell
+  (`ed_knp::glia`, after Halnes et al. 2013): a second KNP domain for the astrocytes' interior
+  (α = 0.4, λ = 3.2) behind a membrane with Kir4.1, Na⁺ and Cl⁻ leaks and a pump, its
+  potential from a cable equation. They take up K⁺ where it is high and release it through
+  the syncytium where it is low. See [Astrocytes](#astrocytes-spatial-buffering).
 
 ## The threshold of a single cell
 
@@ -159,7 +164,8 @@ numbers match.
 records the 0.25 mM onset, and the neurons with somata within 30 µm stand in for the imaged
 neurons: the depolarisation arrives when half their dendrites are above −40 mV (a proxy for
 the neuronal Ca²⁺ rise) and ends when fewer than a quarter are. The table gives values at the
-far electrode, 40 s runs:
+far electrode, 40 s runs, without astrocytes (the example's runs with astrocytes are in
+[Astrocytes](#astrocytes-spatial-buffering)):
 
 | g_NaP (mS/cm²) | driven | buffering (1/ms) | speed (mm/min) | K⁺ lead (s) | [K⁺]e at depolarisation (mM) | peak [K⁺]e (mM) | depolarisation lasts (s) | laminar Δφ (mV) |
 |---|---|---|---|---|---|---|---|---|
@@ -200,10 +206,57 @@ What matches and what does not:
 4. **The potential shift looks too small, but this is not a like-for-like comparison.** The
    laminar Δφ is −2 to −4 mV, while DC shifts in CSD are typically −15 to −30 mV against a
    remote reference (a literature range; Enger et al. give the duration, not the amplitude, in
-   the text we could read). The membranes here do not see φ and there are no glial currents,
-   both of which shape the DC shift.
+   the text we could read). The membranes here do not see φ and, in these runs, there are no
+   glial currents, both of which shape the DC shift.
 
 A closer replication would need astrocytes (K⁺ uptake and gap-junction redistribution, which
-targets finding 2 and the recovery time), a thicker, layered slab with an open boundary or a
-remote reference for the DC shift, and Ca²⁺ and glutamate signals if the timing of those is to
-be compared.
+targets finding 2 and the recovery time; added below), a thicker, layered slab with an open
+boundary or a remote reference for the DC shift, and Ca²⁺ and glutamate signals if the timing
+of those is to be compared.
+
+## Astrocytes (spatial buffering)
+
+`SdConfig::glia` fills the tissue with the astrocytic syncytium of `ed_knp::glia`, after Halnes
+et al. (2013, PLoS Comput Biol 9:e1003386). Every grid cell holds astrocytic interior
+(volume fraction 0.4, tortuosity 3.2) with its own Na⁺, K⁺ and Cl⁻ as a second KNP domain,
+behind a membrane with Kir4.1 (its conductance rising with √[K⁺]e), Na⁺ and Cl⁻ leaks and a
+Na⁺/K⁺ pump, calibrated so that rest (−85 mV) is a steady state. The membrane potential comes
+from a cable equation through the gap-junction-coupled interior, and the membrane currents move
+ions between the two domains. In Halnes et al.'s own setting (a 300 µm column with K⁺ released
+at one end, `glia::tests`) the astrocytes take up K⁺ at the source (peak [K⁺]e 10 instead of
+16 mM) and release it 100–300 µm away, where extracellular diffusion alone has not yet
+arrived. Cutting the gap junctions removes the effect.
+
+The runs of `sd_electrodes` with astrocytes, against the same drive without them (40 s, far
+electrode; membrane area in µm² per µm³ of tissue, Halnes et al.'s is 8):
+
+| g_NaP (mS/cm²) | driven | glia (µm⁻¹, coupling) | speed (mm/min) | K⁺ lead (s) | [K⁺]e at depolarisation (mM) | peak [K⁺]e (mM) | depolarisation lasts (s) | laminar Δφ (mV) |
+|---|---|---|---|---|---|---|---|---|
+| 0.3 | 100 | 8, 1 | 17.2 | −0.02 | 3.2 | 13.4 | > 38.7 | −4.3 |
+| 0.25 | 400 | 8, 1 | 6.0 | 0.16 | 3.4 | 12.6 | > 36.8 | −3.0 |
+| 0.2 | 100 | – | 3.5 | 0.36 | 4.1 | 27.4 | > 33.8 | −3.0 |
+| 0.2 | 100 | 1, 1 | 4.8 | 0.86 | 4.2 | 12.9 | > 34.6 | −1.8 |
+| 0.2 | 100 | 1, 0.01 | 2.5 | 0.54 | 4.1 | 17.1 | > 31.6 | −3.1 |
+
+1. **Halnes et al.'s astrocytes nearly stop the wave.** At their membrane density the
+   astrocytes take up K⁺ so fast that two driven cells raise [K⁺]e to 3.4 mM in the first
+   second instead of 11.5 mM (test `astrocytes_conserve_ions_and_take_up_the_released_potassium`).
+   A wave still started only in the most excitable tissue: g_NaP = 0.3, or 0.25 with 400 driven
+   cells. It did not start at 0.25 with one driven cell, at 0.2 with 100, or with half the
+   density at 0.15–0.25. Where it runs, [K⁺]e peaks at about 13 mM, below the 30–60 mM usually
+   reported for CSD.
+2. **They lengthen the K⁺ precursor, but not nearly enough.** With an eighth of that density, at
+   g_NaP = 0.2 and the same 100 driven cells, the K⁺ lead grows from 0.36 to 0.86 s, and the
+   precursor in space (lead × speed) from 21 to 69 µm. Enger et al.'s is 5.9 s, or about
+   340 µm. The neurons still depolarise at about 4 mM, because the neurons set that threshold.
+   A lead of seconds needs neurons that hold out to about 7 mM while the wave still
+   propagates. Without astrocytes that happens at g_NaP = 0.1 with twice the neuron density:
+   a 1.6 s lead at 7.2 mM, 1.9 mm/min, in a 15 s exploratory run. In the runs we tried at that
+   density, no wave started once astrocytes were added.
+3. **The syncytium speeds the wave up, while experiments suggest the opposite.** Coupled
+   astrocytes carry K⁺ ahead of the front, so the wave runs at 4.8 mm/min. It runs at 2.5 with
+   the coupling cut to 1 %, and at 3.5 without astrocytes. In mice whose astrocytes lack Cx43,
+   SD instead propagates about 20 % faster (Theis et al. 2003, J Neurosci 23:766). This model
+   leaves out whatever makes coupling slow SD down.
+4. **Astrocytes do not end the depolarisation.** They redistribute K⁺ but remove none, so the
+   closed slab still does not recover within 40 s. Only the KCl uptake option lets it recover.

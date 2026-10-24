@@ -1,12 +1,13 @@
 //! Virtual electrodes in the spreading-depression tissue of `ed_knp::spreading`, measuring what
 //! Enger et al. (2015, Cereb Cortex 25:4469) measured in mouse visual cortex: how long the
 //! extracellular K⁺ rise leads the depolarisation, [K⁺]e when the depolarisation arrives, the
-//! wave speed, the extracellular potential shift and how long the depolarisation lasts.
-//! Prints a Markdown table.
+//! wave speed, the extracellular potential shift and how long the depolarisation lasts, with
+//! and without astrocytes ([`ed_knp::glia`]). Prints a Markdown table.
 //!
 //! `cargo run --release -p ed-knp --example sd_electrodes` (a few minutes; runs in parallel
 //! on all cores). `SD_MS` sets the simulated time per run (default 40000 ms).
 use ed_core::Simulation;
+use ed_knp::glia::GliaConfig;
 use ed_knp::spreading::{SdConfig, SdTissue, DEPOLARISED_MV};
 use ed_knp::tissue::K;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -16,6 +17,8 @@ struct Case {
     g_nap: f64,
     driven: usize,
     buffering: f64,
+    /// Astrocytic membrane area per tissue volume (µm⁻¹) and gap-junction coupling.
+    glia: Option<(f64, f64)>,
 }
 
 /// Drive on each driven soma, nS (as in `spreading_scan`).
@@ -54,6 +57,11 @@ fn run(c: &Case, ms: f64) -> Vec<Electrode> {
     let mut cfg = SdConfig::default();
     cfg.population.g_nap = c.g_nap;
     cfg.buffering = c.buffering;
+    cfg.glia = c.glia.map(|(area_per_volume, coupling)| GliaConfig {
+        area_per_volume,
+        coupling,
+        ..GliaConfig::default()
+    });
     let size = cfg.knp.size;
     let mut t = SdTissue::new(&cfg);
     let centre = [size[0] / 2.0, size[1] / 2.0 + Y_OFF, Z_SOMA];
@@ -113,8 +121,25 @@ fn main() {
                 g_nap,
                 driven,
                 buffering,
+                glia: None,
             });
         }
+    }
+    // Astrocytes: Halnes et al.'s membrane density only lets the most excitable tissue
+    // ignite; an eighth of it, with and without gap junctions, against the same drive alone.
+    for (g_nap, driven, glia) in [
+        (0.3, 100, Some((8.0, 1.0))),
+        (0.25, 400, Some((8.0, 1.0))),
+        (0.2, 100, None),
+        (0.2, 100, Some((1.0, 1.0))),
+        (0.2, 100, Some((1.0, 0.01))),
+    ] {
+        cases.push(Case {
+            g_nap,
+            driven,
+            buffering: 0.0,
+            glia,
+        });
     }
 
     let next = AtomicUsize::new(0);
@@ -135,8 +160,8 @@ fn main() {
     // Times at the far electrode, which sits in tissue the wave reached on its own. A negative
     // K⁺ lead means the neurons depolarised before [K⁺]e rose by 0.25 mM.
     let s = |t: f64| format!("{:.1}", t / 1e3);
-    println!("| g_NaP (mS/cm²) | driven | buffering (1/ms) | speed (mm/min) | K⁺ lead (s) | [K⁺]e at depolarisation (mM) | peak [K⁺]e (mM) | depolarisation lasts (s) | laminar Δφ (mV) |");
-    println!("|---|---|---|---|---|---|---|---|---|");
+    println!("| g_NaP (mS/cm²) | driven | buffering (1/ms) | glia (µm⁻¹, coupling) | speed (mm/min) | K⁺ lead (s) | [K⁺]e at depolarisation (mM) | peak [K⁺]e (mM) | depolarisation lasts (s) | laminar Δφ (mV) |");
+    println!("|---|---|---|---|---|---|---|---|---|---|");
     for (c, e) in cases.iter().zip(results.into_inner().unwrap()) {
         let (near, far) = (&e[0], &e[1]);
         let (speed, lead, k_dep, lasts) = match far.t_dep {
@@ -153,8 +178,9 @@ fn main() {
                     .map_or(format!("> {}", s(ms - td)), |tr| s(tr - td)),
             ),
         };
+        let glia = c.glia.map_or("–".into(), |(a, k)| format!("{a}, {k}"));
         println!(
-            "| {} | {} | {} | {speed} | {lead} | {k_dep} | {:.1} | {lasts} | {:.1} |",
+            "| {} | {} | {} | {glia} | {speed} | {lead} | {k_dep} | {:.1} | {lasts} | {:.1} |",
             c.g_nap, c.driven, c.buffering, far.k_max, far.dphi_min
         );
     }
