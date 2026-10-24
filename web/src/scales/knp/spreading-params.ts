@@ -2,7 +2,7 @@ import type { ParamSchema } from '../../ui/controls';
 
 /** Fields the spreading-depression solver can send; values match `SdSim.field` names. */
 export const SD_FIELDS = [
-  { value: 'k', label: '[K⁺]', units: 'mM' },
+  { value: 'k', label: '[K⁺]e', units: 'mM' },
   { value: 'na', label: '[Na⁺]', units: 'mM' },
   { value: 'x', label: '[X⁻]', units: 'mM' },
   { value: 'phi', label: 'φ', units: 'mV' },
@@ -11,9 +11,12 @@ export const SD_FIELDS = [
 ] as const;
 
 /** Fields that only exist with astrocytes; without them the solver shows [K⁺]e instead. */
-export const SD_GLIA_FIELDS: readonly string[] = ['vg', 'kg'];
+export const SD_GLIA_FIELDS: readonly (typeof SD_FIELDS)[number]['value'][] = ['vg', 'kg'];
 
-/** Parameters that fix the calibrated resting state: changing one rebuilds the tissue. */
+/**
+ * Parameters that fix the calibrated resting state: changing one rebuilds the tissue
+ * (`coupling` only while there are astrocytes).
+ */
 export const SD_REBUILD_KEYS = ['neurons', 'gNap', 'glia', 'coupling'] as const;
 
 /** Controls of the spreading-depression scenario; read by the view and the worker solver. */
@@ -24,6 +27,7 @@ export const SD_PARAMS = [
     label: 'Shown field',
     options: SD_FIELDS.map(({ value, label }) => ({ value, label })),
     default: 'k',
+    help: 'The astrocyte fields need Astrocytes above 0; without them [K⁺]e is shown',
   },
   {
     kind: 'number',
@@ -88,7 +92,7 @@ export const SD_PARAMS = [
     step: 0.5,
     default: 0,
     unit: 'µm²/µm³',
-    help: 'Astrocytic membrane area per tissue volume, 0 for none (Halnes et al. 2013 use 8). Astrocytes take up K⁺ where it is high and release it through their gap junctions where it is low (restarts)',
+    help: 'Astrocytic membrane area per tissue volume, 0 for none (Halnes et al. 2013 use 8). Astrocytes take up K⁺ where it is high and release it through their gap junctions where it is low. They raise the ignition threshold: add driven neurons or persistent Na⁺ to start a wave (restarts)',
   },
   {
     kind: 'number',

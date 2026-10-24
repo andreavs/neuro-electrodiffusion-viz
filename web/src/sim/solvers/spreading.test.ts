@@ -33,7 +33,11 @@ class FakeSd implements SdWasm {
   depolarised = () => 0.5;
   shape = () => Uint32Array.of(2, 2, 1);
   size = () => Float64Array.of(1000, 1000, 200);
-  field = (name: string) => new Float32Array(4).fill(name === 'k' ? 3 : 0);
+  field = (name: string) => {
+    // As in wasm, the astrocyte fields only exist with astrocytes.
+    if ((name === 'vg' || name === 'kg') && !(this.glia > 0)) throw new Error(`field ${name} needs astrocytes`);
+    return new Float32Array(4).fill(name === 'k' ? 3 : 0);
+  };
   somata = () => new Float32Array(3 * this.neurons);
   v_soma = () => new Float32Array(this.neurons).fill(-65);
   driven = () => Uint32Array.from({ length: this.drivenCount }, (_, i) => i);
@@ -130,8 +134,20 @@ describe('spreading-depression solver adapter', () => {
     expect(sims).toHaveLength(2);
     expect([sims[1]!.glia, sims[1]!.coupling]).toEqual([2, 0.5]);
     expect(solver.frame().fields[0]!.name).toBe('vg');
+    solver.setParams({ field: 'kg' });
+    expect(solver.frame().fields[0]!.name).toBe('kg');
+    // The coupling rebuilds the syncytium while there is one...
+    solver.setParams({ coupling: 0.2 });
+    expect(sims).toHaveLength(3);
+    expect(sims[2]!.coupling).toBe(0.2);
     solver.setParams({ glia: 0 });
+    expect(sims).toHaveLength(4);
     expect(solver.frame().fields[0]!.name).toBe('k');
+    // ...and is only remembered without one.
+    solver.setParams({ coupling: 0.7 });
+    expect(sims).toHaveLength(4);
+    solver.setParams({ glia: 1 });
+    expect([sims[4]!.glia, sims[4]!.coupling]).toEqual([1, 0.7]);
   });
 
   it('rejects an unknown field and keeps the old one', () => {

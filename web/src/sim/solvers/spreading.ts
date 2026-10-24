@@ -91,7 +91,10 @@ export function makeSpreadingSolver(
     const old = { ...params };
     Object.assign(params, p);
     try {
-      if (SD_REBUILD_KEYS.some((k) => k in p && p[k] !== old[k])) build();
+      // Without astrocytes the coupling has nothing to act on.
+      const rebuilds = (k: (typeof SD_REBUILD_KEYS)[number]) =>
+        k in p && p[k] !== old[k] && (k !== 'coupling' || Number(params.glia) > 0);
+      if (SD_REBUILD_KEYS.some(rebuilds)) build();
       else applyRuntime(sim!, p);
     } catch (err) {
       Object.assign(params, old);
@@ -120,8 +123,9 @@ export function makeSpreadingSolver(
       const [nx, ny, nz] = sim.shape();
       const [sx, sy, sz] = sim.size();
       const v = sim.v_soma();
-      const glial = SD_GLIA_FIELDS.includes(String(params.field)) && !(Number(params.glia) > 0);
-      const shown = glial ? 'k' : String(params.field);
+      const field = String(params.field);
+      const glial = (SD_GLIA_FIELDS as readonly string[]).includes(field) && !(Number(params.glia) > 0);
+      const shown = glial ? 'k' : field;
       const fields = [
         { name: shown, shape: [nx!, ny!, nz!], data: sim.field(shown) },
         { name: 'v', shape: [v.length], data: v },

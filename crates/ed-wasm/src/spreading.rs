@@ -52,29 +52,7 @@ impl SdSim {
         glia: f64,
         coupling: f64,
     ) -> Result<SdSim, JsError> {
-        if !(NEURONS.0..=NEURONS.1).contains(&neurons) {
-            return Err(JsError::new(&format!(
-                "neuron count must be within {}–{}",
-                NEURONS.0, NEURONS.1
-            )));
-        }
-        check("persistent Na⁺ conductance", g_nap, G_NAP)?;
-        check("astrocyte membrane area", glia, GLIA)?;
-        check("gap-junction coupling", coupling, COUPLING)?;
-        let mut cfg = SdConfig {
-            neurons,
-            seed: u64::from(seed),
-            glia: (glia > 0.0).then(|| GliaConfig {
-                area_per_volume: glia,
-                coupling,
-                ..GliaConfig::default()
-            }),
-            ..SdConfig::default()
-        };
-        cfg.population.g_nap = g_nap;
-        Ok(Self {
-            tissue: SdTissue::new(&cfg),
-        })
+        Self::build(seed, neurons, g_nap, glia, coupling).map_err(|e| JsError::new(&e))
     }
 
     /// Drives the `count` neurons nearest the centre of the soma layer with `g_ns` nS each.
@@ -148,6 +126,41 @@ impl SdSim {
 }
 
 impl SdSim {
+    fn build(
+        seed: u32,
+        neurons: usize,
+        g_nap: f64,
+        glia: f64,
+        coupling: f64,
+    ) -> Result<Self, String> {
+        if !(NEURONS.0..=NEURONS.1).contains(&neurons) {
+            return Err(format!(
+                "neuron count must be within {}–{}",
+                NEURONS.0, NEURONS.1
+            ));
+        }
+        in_range("persistent Na⁺ conductance", g_nap, G_NAP)?;
+        in_range("astrocyte membrane area", glia, GLIA)?;
+        // Coupling only matters with astrocytes.
+        if glia > 0.0 {
+            in_range("gap-junction coupling", coupling, COUPLING)?;
+        }
+        let mut cfg = SdConfig {
+            neurons,
+            seed: u64::from(seed),
+            glia: (glia > 0.0).then(|| GliaConfig {
+                area_per_volume: glia,
+                coupling,
+                ..GliaConfig::default()
+            }),
+            ..SdConfig::default()
+        };
+        cfg.population.g_nap = g_nap;
+        Ok(Self {
+            tissue: SdTissue::new(&cfg),
+        })
+    }
+
     fn field_values(&self, name: &str) -> Result<&[f64], String> {
         let knp = &self.tissue.knp;
         let glia = || {
@@ -174,7 +187,7 @@ mod tests {
 
     #[test]
     fn fields_and_neurons_have_consistent_sizes() {
-        let mut s = SdSim::new(1, 200, 0.25, 0.0, 1.0).unwrap();
+        let mut s = SdSim::build(1, 200, 0.25, 0.0, 0.0).unwrap();
         s.set_drive(3, 20.0).unwrap();
         s.step(5);
         assert!((s.time_ms() - 5.0 * s.dt()).abs() < 1e-9);
@@ -207,7 +220,7 @@ mod tests {
 
     #[test]
     fn astrocytes_add_their_fields() {
-        let mut s = SdSim::new(1, 200, 0.25, 1.0, 0.5).unwrap();
+        let mut s = SdSim::build(1, 200, 0.25, 1.0, 0.5).unwrap();
         s.set_drive(3, 20.0).unwrap();
         s.step(5);
         let len = s.field_values("k").unwrap().len();
@@ -215,6 +228,7 @@ mod tests {
         assert_eq!(v.len(), len);
         assert!(v.iter().all(|v| (-90.0..-40.0).contains(v)), "{v:?}");
         assert!(s.field_values("kg").unwrap().iter().all(|&k| k > 90.0));
-        assert!(in_range("coupling", 0.0, COUPLING).is_err());
+        assert!(SdSim::build(1, 200, 0.25, 1.0, 0.0).is_err());
+        assert!(SdSim::build(1, 200, 0.25, 9.0, 1.0).is_err());
     }
 }
